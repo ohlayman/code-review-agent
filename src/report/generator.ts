@@ -2,6 +2,11 @@ import type { Finding } from "../llm/schemas.js";
 
 const SEVERITIES = ["P0", "P1", "P2", "P3"] as const;
 
+// 转义 HTML 注入相关字符：< > &。故意不转义反引号/方括号——suggestion/evidence 合法含代码反引号，转义会破坏代码格式；XSS 向量只依赖尖括号与 &，平台侧也会 sanitize 原始 HTML。
+function escapeHtml(text: string): string {
+  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
 function countSeverities(findings: Finding[]): Record<(typeof SEVERITIES)[number], number> {
   const counts = { P0: 0, P1: 0, P2: 0, P3: 0 };
   for (const finding of findings) counts[finding.severity] += 1;
@@ -20,7 +25,9 @@ function renderSummary(findings: Finding[], scope: string, limitations: string[]
   const counts = countSeverities(findings);
   const stats = SEVERITIES.map((severity) => `${severity} ${counts[severity]} 个`).join(" / ");
   const limitationLines =
-    limitations.length > 0 ? limitations.map((item) => `  - ${item}`) : ["  - 无"];
+    limitations.length > 0
+      ? limitations.map((item) => `  - ${escapeHtml(item)}`)
+      : ["  - 无"];
 
   return [
     "## 1. 审查摘要",
@@ -28,7 +35,7 @@ function renderSummary(findings: Finding[], scope: string, limitations: string[]
     `- 审查状态：${findings.length > 0 ? "发现问题" : "未发现明确问题"}`,
     `- 总体建议：${overallAdvice(findings)}`,
     `- 问题统计：${stats}（共 ${findings.length} 个）`,
-    `- 审查范围：${scope}`,
+    `- 审查范围：${escapeHtml(scope)}`,
     "- 验证限制：",
     ...limitationLines,
   ].join("\n");
@@ -36,33 +43,33 @@ function renderSummary(findings: Finding[], scope: string, limitations: string[]
 
 function renderDetail(finding: Finding): string {
   return [
-    `### [${finding.severity}] ${finding.title}`,
+    `### [${finding.severity}] ${escapeHtml(finding.title)}`,
     "",
-    `- 文件：\`${finding.file}\``,
-    `- 代码位置：\`${finding.file}:${finding.line}\``,
+    `- 文件：\`${escapeHtml(finding.file)}\``,
+    `- 代码位置：\`${escapeHtml(finding.file)}:${finding.line}\``,
     `- 问题类型：${finding.category}`,
-    `- 问题描述：${finding.description}`,
-    `- 触发条件：${finding.trigger}`,
-    `- 影响分析：${finding.impact}`,
-    `- 修复建议：${finding.suggestion}`,
+    `- 问题描述：${escapeHtml(finding.description)}`,
+    `- 触发条件：${escapeHtml(finding.trigger)}`,
+    `- 影响分析：${escapeHtml(finding.impact)}`,
+    `- 修复建议：${escapeHtml(finding.suggestion)}`,
     `- 置信度：${finding.confidence}`,
-    `- 证据：${finding.evidence}`,
+    `- 证据：${escapeHtml(finding.evidence)}`,
   ].join("\n");
 }
 
 function renderConclusion(findings: Finding[]): string {
   const top = findings[0];
   const priority = top
-    ? `[${top.severity}] ${top.title}（\`${top.file}:${top.line}\`）`
+    ? `[${top.severity}] ${escapeHtml(top.title)}（\`${escapeHtml(top.file)}:${top.line}\`）`
     : "无";
   const tests =
     findings.length > 0
-      ? `建议为以下位置补充回归测试：${findings.map((finding) => `\`${finding.file}:${finding.line}\``).join("、")}`
+      ? `建议为以下位置补充回归测试：${findings.map((finding) => `\`${escapeHtml(finding.file)}:${finding.line}\``).join("、")}`
       : "无（本次未发现明确问题）";
   const uncertain = findings.filter((finding) => finding.confidence !== "high");
   const manual =
     uncertain.length > 0
-      ? `以下问题置信度非高，需人工确认：${uncertain.map((finding) => `[${finding.severity}] ${finding.title}`).join("、")}`
+      ? `以下问题置信度非高，需人工确认：${uncertain.map((finding) => `[${finding.severity}] ${escapeHtml(finding.title)}`).join("、")}`
       : "无";
 
   return [

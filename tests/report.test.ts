@@ -40,4 +40,15 @@ describe("renderReport", () => {
     expect(md).toContain("总体建议：可合并");
     expect(md).not.toContain("可合并但建议改进");
   });
+
+  it("转义 LLM 自由文本中的 HTML 字符", () => {
+    const md = renderReport([f({ description: "<script>alert(1)</script>" })], "s", []);
+    expect(md).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(md).not.toContain("<script>");
+  });
+
+  it("不转义反引号，保留建议中的代码格式", () => {
+    const md = renderReport([f({ suggestion: "改为 `return a ?? 0`" })], "s", []);
+    expect(md).toContain("`return a ?? 0`");
+  });
 });
