@@ -37,6 +37,7 @@ describe("renderReport", () => {
 
   it("无问题时给出可合并结论", () => {
     const md = renderReport([], "s", []);
-    expect(md).toContain("可合并");
+    expect(md).toContain("总体建议：可合并");
+    expect(md).not.toContain("可合并但建议改进");
   });
 });
