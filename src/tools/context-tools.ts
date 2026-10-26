@@ -2,6 +2,9 @@ import { tool, type StructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 import type { RepoAccess } from "../repository/adapter.js";
 
+// 审查目标：worktree 表示未提交的工作区，rev 表示某个提交或分支引用。
+export type ReviewTarget = { kind: "worktree" } | { kind: "rev"; rev: string };
+
 // 在仓库文件列表中按优先级查找与源文件对应的测试文件。
 function findRelatedTest(path: string, files: string[]): string | undefined {
   const normalized = path.replace(/^\.\//, "");
@@ -22,9 +25,22 @@ function findRelatedTest(path: string, files: string[]): string | undefined {
   return candidates.find((candidate) => files.includes(candidate));
 }
 
-export function createContextTools(repo: RepoAccess): StructuredTool[] {
+export function createContextTools(repo: RepoAccess, target?: ReviewTarget): StructuredTool[] {
+  // undefined 保持旧的 HEAD 语义，兼容既有调用方；rev/worktree 则读取被审版本。
+  const readContent = (path: string) => {
+    if (target?.kind === "rev") return repo.readFile(path, target.rev);
+    if (target?.kind === "worktree") return repo.readWorktreeFile(path);
+    return repo.readFile(path);
+  };
+  const grepContent = (pattern: string) => {
+    if (target?.kind === "rev") return repo.grep(pattern, target.rev);
+    if (target?.kind === "worktree") return repo.grepWorktree(pattern);
+    return repo.grep(pattern);
+  };
+  const listAll = () => (target?.kind === "rev" ? repo.listFiles(target.rev) : repo.listFiles());
+
   const readFile = tool(
-    async ({ path }: { path: string }) => repo.readFile(path),
+    async ({ path }: { path: string }) => readContent(path),
     {
       name: "read_file",
       description: "读取指定文件的完整内容。参数 path 为仓库内相对路径，例如 src/parse.ts。",
@@ -34,7 +50,7 @@ export function createContextTools(repo: RepoAccess): StructuredTool[] {
 
   const readFileRange = tool(
     async ({ path, startLine, endLine }: { path: string; startLine: number; endLine: number }) => {
-      const content = await repo.readFile(path);
+      const content = await readContent(path);
       return content.split("\n").slice(startLine - 1, endLine).join("\n");
     },
     {
@@ -50,7 +66,7 @@ export function createContextTools(repo: RepoAccess): StructuredTool[] {
   );
 
   const grepTool = tool(
-    async ({ pattern }: { pattern: string }) => repo.grep(pattern),
+    async ({ pattern }: { pattern: string }) => grepContent(pattern),
     {
       name: "grep",
       description: "在仓库中搜索匹配的文本行，返回包含文件名与行号的结果。参数 pattern 为正则表达式。",
@@ -59,7 +75,7 @@ export function createContextTools(repo: RepoAccess): StructuredTool[] {
   );
 
   const listFiles = tool(
-    async () => (await repo.listFiles()).join("\n"),
+    async () => (await listAll()).join("\n"),
     {
       name: "list_files",
       description: "列出仓库中的全部文件路径，每行一个。无需参数。",
@@ -69,8 +85,8 @@ export function createContextTools(repo: RepoAccess): StructuredTool[] {
 
   const readRelatedTest = tool(
     async ({ path }: { path: string }) => {
-      const testPath = findRelatedTest(path, await repo.listFiles());
-      return testPath ? repo.readFile(testPath) : "未找到对应测试文件";
+      const testPath = findRelatedTest(path, await listAll());
+      return testPath ? readContent(testPath) : "未找到对应测试文件";
     },
     {
       name: "read_related_test",

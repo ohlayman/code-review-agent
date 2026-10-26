@@ -47,6 +47,14 @@ describe("buildReviewGraph", () => {
     expect(new Set(merged.map((item) => item.id)).size).toBe(merged.length);
   });
 
+  it("发现候选但复核返回空结果时报「无法充分审查」", async () => {
+    const model = makeFakeModel({ findings: [candidate] }, []);
+    const graph = buildReviewGraph({ model: model as any, toolsFactory: createContextTools, repoFactory: (p) => new GitRepositoryAdapter(p), maxToolSteps: 2, maxFilesPerBatch: 20 });
+    const out = await graph.invoke({ repoPath: repo.repoPath, range: "commit", ref: repo.headCommit, base: null });
+    expect(out.report).toContain("无法充分审查");
+    expect(out.report).not.toContain("未发现明确问题");
+  });
+
   it("引擎抛错时产出「无法充分审查」而非「未发现明确问题」", async () => {
     const model = makeFakeModel(new Error("boom"), []);
     const graph = buildReviewGraph({ model: model as any, toolsFactory: createContextTools, repoFactory: (p) => new GitRepositoryAdapter(p), maxToolSteps: 2, maxFilesPerBatch: 20 });

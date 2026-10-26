@@ -5,13 +5,14 @@ import { ReviewState, type ReviewStateType } from "./state.js";
 import type { Candidate } from "../llm/schemas.js";
 import { parseDiff, type ChangeSet } from "../repository/diff.js";
 import type { RepoAccess, RepositoryAdapter } from "../repository/adapter.js";
+import type { ReviewTarget } from "../tools/context-tools.js";
 import { discoverCandidates, verifyCandidates, type EngineDeps } from "../review/engine.js";
 import { finalizeFindings, dedupeFindings, sortFindings } from "../review/grade.js";
 import { renderReport } from "../report/generator.js";
 
 export interface AgentDeps {
   model: ChatOpenAI;
-  toolsFactory: (repo: RepoAccess) => StructuredTool[];
+  toolsFactory: (repo: RepoAccess, target: ReviewTarget) => StructuredTool[];
   repoFactory: (repoPath: string) => RepositoryAdapter;
   maxToolSteps: number;
   maxFilesPerBatch: number;
@@ -28,6 +29,13 @@ function describeScope(state: ReviewStateType): string {
   if (state.range === "commit") return state.ref ? `commit ${state.ref}` : "commit（未指定 sha）";
   if (state.range === "branch") return state.ref ? `branch ${state.ref}` : "branch（未指定分支）";
   return "工作区 diff";
+}
+
+// 上下文工具必须读取被审版本：diff 模式读工作区，commit/branch 模式读对应 revision。
+function targetFor(state: ReviewStateType): ReviewTarget {
+  if (state.range === "diff") return { kind: "worktree" };
+  if (!state.ref) throw new Error(`${state.range} 范围缺少引用`);
+  return { kind: "rev", rev: state.ref };
 }
 
 // 失败兜底：必须明确「无法充分审查」，绝不能渲染成「未发现明确问题」。
@@ -94,7 +102,7 @@ async function discoverNode(state: ReviewStateType, deps: AgentDeps): Promise<Pa
     const repo = deps.repoFactory(state.repoPath);
     const engineDeps: EngineDeps = {
       model: deps.model,
-      tools: deps.toolsFactory(repo),
+      tools: deps.toolsFactory(repo, targetFor(state)),
       maxToolSteps: deps.maxToolSteps,
     };
 
@@ -125,10 +133,14 @@ async function verifyNode(state: ReviewStateType, deps: AgentDeps): Promise<Part
     const repo = deps.repoFactory(state.repoPath);
     const engineDeps: EngineDeps = {
       model: deps.model,
-      tools: deps.toolsFactory(repo),
+      tools: deps.toolsFactory(repo, targetFor(state)),
       maxToolSteps: deps.maxToolSteps,
     };
     const verifications = await verifyCandidates(engineDeps, state.candidates, changeSet);
+    // 有候选却复核不出任何结果属于链路失败，必须 fail-closed，不能渲染成「未发现明确问题」。
+    if (state.candidates.length > 0 && verifications.length === 0) {
+      return { failure: "复核阶段未返回有效结果" };
+    }
     // 状态里没有 verifications 字段，故在 verify 阶段即完成候选×复核的合并。
     return { findings: finalizeFindings(state.candidates, verifications) };
   } catch (error) {
