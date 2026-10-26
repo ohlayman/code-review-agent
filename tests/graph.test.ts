@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { buildReviewGraph } from "../src/core/graph.js";
+import { buildReviewGraph, prefixBatchIds } from "../src/core/graph.js";
 import { GitRepositoryAdapter } from "../src/repository/adapter.js";
 import { createContextTools } from "../src/tools/context-tools.js";
 import { makeFakeModel } from "./helpers/fake-model.js";
@@ -29,6 +29,22 @@ describe("buildReviewGraph", () => {
     const out = await graph.invoke({ repoPath: repo.repoPath, range: "commit", ref: repo.headCommit, base: null });
     expect(out.report).toContain("### [P2]");
     expect(out.report).toContain("src/parse.ts");
+  });
+
+  it("空变更不调用模型（短路返回空候选）", async () => {
+    const model = makeFakeModel(new Error("空变更不应调用模型"), []);
+    const graph = buildReviewGraph({ model: model as any, toolsFactory: createContextTools, repoFactory: (p) => new GitRepositoryAdapter(p), maxToolSteps: 2, maxFilesPerBatch: 20 });
+    const out = await graph.invoke({ repoPath: repo.repoPath, range: "diff", ref: null, base: null });
+    expect(out.report).toContain("未发现明确问题");
+  });
+
+  it("跨批次合并时重写候选 id 以避免冲突", () => {
+    const merged = [
+      ...prefixBatchIds(1, [candidate]),
+      ...prefixBatchIds(2, [{ ...candidate }]),
+    ];
+    expect(merged.map((item) => item.id)).toEqual(["b1-c1", "b2-c1"]);
+    expect(new Set(merged.map((item) => item.id)).size).toBe(merged.length);
   });
 
   it("引擎抛错时产出「无法充分审查」而非「未发现明确问题」", async () => {

@@ -2,6 +2,7 @@ import { StateGraph, START, END } from "@langchain/langgraph";
 import type { StructuredTool } from "@langchain/core/tools";
 import type { ChatOpenAI } from "@langchain/openai";
 import { ReviewState, type ReviewStateType } from "./state.js";
+import type { Candidate } from "../llm/schemas.js";
 import { parseDiff, type ChangeSet } from "../repository/diff.js";
 import type { RepoAccess, RepositoryAdapter } from "../repository/adapter.js";
 import { discoverCandidates, verifyCandidates, type EngineDeps } from "../review/engine.js";
@@ -76,11 +77,20 @@ async function parseNode(state: ReviewStateType, deps: AgentDeps): Promise<Parti
   }
 }
 
+// 各批次各自从 c1 开始编号，合并时必须加批次前缀，否则复核/定级按 id 匹配会串批、
+// 产生错误证据甚至静默丢弃已确认问题。id 不进入报告，可安全重写。
+export function prefixBatchIds(batchIndex: number, candidates: Candidate[]): Candidate[] {
+  return candidates.map((candidate) => ({ ...candidate, id: `b${batchIndex}-${candidate.id}` }));
+}
+
 async function discoverNode(state: ReviewStateType, deps: AgentDeps): Promise<Partial<ReviewStateType>> {
   if (state.failure) return {};
   try {
     const changeSet = state.changeSet;
     if (!changeSet) throw new Error("缺少变更集");
+    // 空变更直接短路：不调用模型，杜绝空 diff 上臆造候选。
+    if (changeSet.files.length === 0) return { candidates: [] };
+
     const repo = deps.repoFactory(state.repoPath);
     const engineDeps: EngineDeps = {
       model: deps.model,
@@ -89,13 +99,15 @@ async function discoverNode(state: ReviewStateType, deps: AgentDeps): Promise<Pa
     };
 
     if (changeSet.files.length > deps.maxFilesPerBatch) {
-      const candidates = [];
+      const candidates: Candidate[] = [];
       for (let i = 0; i < changeSet.files.length; i += deps.maxFilesPerBatch) {
+        const batchIndex = i / deps.maxFilesPerBatch + 1;
         const batch: ChangeSet = {
           ...changeSet,
           files: changeSet.files.slice(i, i + deps.maxFilesPerBatch),
         };
-        candidates.push(...(await discoverCandidates(engineDeps, batch)));
+        const batchCandidates = await discoverCandidates(engineDeps, batch);
+        candidates.push(...prefixBatchIds(batchIndex, batchCandidates));
       }
       return { candidates };
     }
