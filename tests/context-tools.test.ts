@@ -144,8 +144,8 @@ describe("createContextTools", () => {
     const fakeWorktree = await mkdtemp(join(tmpdir(), "code-review-agent-fake-worktree-"));
     try {
       await writeFile(join(fakeWorktree, "fake-only.ts"), "FAKE_ROOT_SENTINEL\n", "utf8");
-      // 非 bare 仓库中 git 通常忽略 core.worktree；本实现完全不读 git 配置，
-      // 直接向 .git/config 追加伪 worktree 以验证根仍来自文件系统遍历。
+      // git 会遵循 core.worktree（非 bare 仓库同样生效），能把工作区指向仓库外；
+      // 本用例只验证工作区文件读取根来自文件系统遍历，diff/grep 的重定向见下一用例。
       const fakePath = fakeWorktree.replaceAll("\\", "/");
       await writeFile(
         join(temp.repoPath, ".git", "config"),
@@ -162,6 +162,40 @@ describe("createContextTools", () => {
     } finally {
       temp.cleanup();
       rmSync(fakeWorktree, { recursive: true, force: true });
+    }
+  });
+
+  it("core.worktree 不能把工作区 diff 与 grep 重定向到仓库外", async () => {
+    const temp = await createTempRepo();
+    const outsideDir = await mkdtemp(join(tmpdir(), "code-review-agent-outside-worktree-"));
+    try {
+      await writeFile(join(temp.repoPath, "src", "config.ts"), "IN_REPO\n", "utf8");
+      const setupGit = simpleGit(temp.repoPath);
+      await setupGit.add(["-A"]);
+      await setupGit.commit("add config");
+
+      // 仓库外目录：同路径文件带唯一哨兵，另有一个仅存在于该目录的文件。
+      await mkdir(join(outsideDir, "src"), { recursive: true });
+      await writeFile(join(outsideDir, "src", "config.ts"), "OUTSIDE_CONFIG_SENTINEL\n", "utf8");
+      await writeFile(join(outsideDir, "outside-only.txt"), "OUTSIDE_SENTINEL\n", "utf8");
+
+      const outsidePath = outsideDir.replaceAll("\\", "/");
+      await writeFile(
+        join(temp.repoPath, ".git", "config"),
+        `[core]\n\tworktree = ${outsidePath}\n`,
+        { flag: "a" },
+      );
+
+      // 未修复时 git diff/grep 会读取被重定向的工作区，从而泄露仓库外文件内容。
+      const adapter = new GitRepo(temp.repoPath);
+      const diff = await adapter.getWorkingTreeDiff();
+      expect(diff).not.toContain("OUTSIDE_CONFIG_SENTINEL");
+      expect(diff).not.toContain("OUTSIDE_SENTINEL");
+      const grepOut = await adapter.grepWorktree("OUTSIDE_CONFIG_SENTINEL");
+      expect(grepOut).not.toContain("OUTSIDE_CONFIG_SENTINEL");
+    } finally {
+      temp.cleanup();
+      rmSync(outsideDir, { recursive: true, force: true });
     }
   });
 

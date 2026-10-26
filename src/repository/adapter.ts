@@ -96,10 +96,20 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
     }).env(buildGitEnv());
   }
 
-  // 被审仓库的 .git/config 可将 fsmonitor/pager 指向外部程序；-c 必须位于子命令之前，
-  // 故统一经此包装，所有 raw 调用都带上固定值。
-  private raw(args: string[]): Promise<string> {
-    return this.git.raw(["-c", "core.fsmonitor=false", "-c", "core.pager=cat", ...args]);
+  // 被审仓库的 .git/config 可将 fsmonitor/pager 指向外部程序，也可用 core.worktree
+  // 把 diff/grep 重定向到仓库外；这些选项必须位于子命令之前，故统一经此包装。
+  // --work-tree 取文件系统派生的可信顶层，优先于仓库配置中的 core.worktree。
+  // 路径作为独立 argv 元素传递（不经 shell），含空格也安全。
+  private async raw(args: string[]): Promise<string> {
+    const topLevel = await this.worktreeRoot();
+    return this.git.raw([
+      "-c",
+      "core.fsmonitor=false",
+      "-c",
+      "core.pager=cat",
+      `--work-tree=${topLevel}`,
+      ...args,
+    ]);
   }
 
   // 从可信的 repoPath 向上查找 .git 标记（目录或文件）确定顶层。
@@ -116,7 +126,11 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
       try {
         await stat(path.join(current, ".git"));
         return current;
-      } catch {
+      } catch (error) {
+        // 只有「此处没有 .git」才继续向上；EACCES/ELOOP 等错误必须失败关闭，
+        // 否则可能静默放宽到祖先仓库，扩大可信根。
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
         const parent = path.dirname(current);
         if (parent === current) {
           throw new Error("无法确定仓库顶层（未找到 .git 标记）");
