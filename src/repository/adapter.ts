@@ -137,7 +137,14 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
   }
 
   private async findWorktreeRoot(): Promise<string> {
-    let current = await realpath(this.repoPath);
+    const realRoot = await realpath(this.repoPath);
+    // repoPath 本身若是 bare 仓库则无工作区顶层。用 git 自身判定，而非可伪造的
+    // 「HEAD 文件 + objects 目录」启发式：普通提交的 sub/HEAD + sub/objects 会让
+    // 子目录启动被误判为 bare，进而 revRaw 无锚回退、静默漏报顶层文件。
+    if (await this.isBareRepository(realRoot)) {
+      throw new MissingWorktreeError("无工作区顶层（bare 仓库）");
+    }
+    let current = realRoot;
     for (;;) {
       try {
         await stat(path.join(current, ".git"));
@@ -148,11 +155,6 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
         const code = (error as NodeJS.ErrnoException).code;
         if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
       }
-      // 当前目录本身可能是 bare gitdir（如父工作区内的 nested.git）：
-      // 不能继续向上命中父仓库的 .git，否则会静默读错对象库。
-      if (await this.isBareGitdir(current)) {
-        throw new MissingWorktreeError("无工作区顶层（bare 仓库）");
-      }
       const parent = path.dirname(current);
       if (parent === current) {
         throw new MissingWorktreeError("无法确定仓库顶层（未找到 .git 标记）");
@@ -161,15 +163,20 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
     }
   }
 
-  private async isBareGitdir(dir: string): Promise<boolean> {
+  // 用 git 判定 bare（`git --git-dir=<dir> rev-parse --is-bare-repository`）：
+  // rev-parse 不执行外部命令/过滤器，安全；伪造目录（仅有 HEAD+objects 文件、
+  // 无有效 gitdir 结构）会报「not a git repository」而非 true，判为非 bare 继续上溯。
+  // 仅「非 git 仓库」视为非 bare；EACCES 等真实错误必须 fail-closed。
+  private async isBareRepository(dir: string): Promise<boolean> {
     try {
-      const [head, objects] = await Promise.all([
-        stat(path.join(dir, "HEAD")),
-        stat(path.join(dir, "objects")),
-      ]);
-      return head.isFile() && objects.isDirectory();
-    } catch {
-      return false;
+      const out = await this.raw([`--git-dir=${dir}`, "rev-parse", "--is-bare-repository"]);
+      return out.trim() === "true";
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/not a git repository|not a git directory|does not appear to be a git/i.test(message)) {
+        return false;
+      }
+      throw error;
     }
   }
 
@@ -186,7 +193,7 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
           if (record.length === 0) continue;
           const nl = record.indexOf("\n");
           const key = nl >= 0 ? record.slice(0, nl) : record;
-          const match = /^filter\.(.+)\.(clean|smudge|process)$/.exec(key);
+          const match = /^filter\.(.*)\.(clean|smudge|process)$/.exec(key);
           if (match) drivers.add(match[1]);
         }
         const names = [...drivers];

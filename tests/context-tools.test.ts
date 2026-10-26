@@ -160,6 +160,31 @@ describe("createContextTools", () => {
     }
   });
 
+  it("普通提交的 HEAD 文件 + objects 目录不得被误判为 bare 导致漏报顶层", async () => {
+    const temp = await createTempRepo();
+    try {
+      // 在子目录提交普通文件 HEAD 与 objects/junk，制造「bare 样目录」。
+      const forged = join(temp.repoPath, "sub");
+      await mkdir(join(forged, "objects"), { recursive: true });
+      await writeFile(join(forged, "HEAD"), "not a real gitdir\n", "utf8");
+      await writeFile(join(forged, "objects", "junk"), "x", "utf8");
+      await writeFile(join(temp.repoPath, "root-marker.txt"), "TOP_LEVEL_MARKER\n", "utf8");
+      const setupGit = simpleGit(temp.repoPath);
+      await setupGit.add(["-A"]);
+      await setupGit.commit("add forged dir + root marker");
+
+      // 从子目录启动：旧实现用 HEAD+objects 启发式误判为 bare，revRaw 无锚回退，
+      // grep/listFiles 只覆盖子目录，静默漏报顶层文件。
+      const adapter = new GitRepo(forged);
+      expect(await adapter.grep("TOP_LEVEL_MARKER", "HEAD")).toContain("root-marker.txt");
+      const files = await adapter.listFiles("HEAD");
+      expect(files).toContain("root-marker.txt");
+      expect(files).toContain("src/parse.ts");
+    } finally {
+      temp.cleanup();
+    }
+  });
+
   it("工作区 diff 不得执行被审仓库定义的 filter 驱动", async () => {
     const temp = await createTempRepo();
     try {
@@ -207,8 +232,37 @@ describe("createContextTools", () => {
         { flag: "a" },
       );
 
-      // 拼成 -c filter.x=y.clean=cat 会被 git 按首个 = 拆成 filter.x=y.clean=cat，
+      // 拼成 -c filter.x=y.clean=cat 会被 git 按首个 = 拆成 key=`filter.x`、value=`y.clean=cat`，
       // 真正要覆盖的 filter.x=y.clean 原封不动，敌意命令仍会执行；必须直接拒绝。
+      await expect(new GitRepo(temp.repoPath).getWorkingTreeDiff()).rejects.toThrow(
+        /不安全的 filter 驱动名/,
+      );
+      expect(existsSync(sentinel)).toBe(false);
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it("filter 驱动名为空时必须 fail-closed 而非被枚举正则静默跳过", async () => {
+    const temp = await createTempRepo();
+    try {
+      const setupGit = simpleGit(temp.repoPath);
+      await writeFile(join(temp.repoPath, "data.txt"), "ORIGINAL\n", "utf8");
+      await setupGit.add(["-A"]);
+      await setupGit.commit("add data");
+      await writeFile(join(temp.repoPath, "data.txt"), "CHANGED_BY_REVIEW\n", "utf8");
+
+      const sentinel = join(temp.repoPath, "filter-pwned.sentinel");
+      const sentinelPosix = sentinel.replaceAll("\\", "/");
+      // 空驱动名：[filter ""] 的 clean 键名为 filter..clean；.gitattributes 用 filter=（空值）引用。
+      // 旧正则 (.+) 要求驱动名至少 1 字符，会静默跳过该键，敌意 clean 仍执行并落哨兵。
+      await writeFile(join(temp.repoPath, ".gitattributes"), "*.txt filter=\n", "utf8");
+      await writeFile(
+        join(temp.repoPath, ".git", "config"),
+        `[filter ""]\n\tclean = printf PWNED > ${sentinelPosix} && cat\n`,
+        { flag: "a" },
+      );
+
       await expect(new GitRepo(temp.repoPath).getWorkingTreeDiff()).rejects.toThrow(
         /不安全的 filter 驱动名/,
       );
@@ -241,7 +295,8 @@ describe("createContextTools", () => {
       await expect(new GitRepo(temp.repoPath).getWorkingTreeDiff()).rejects.toThrow(
         /不安全的 filter 驱动名/,
       );
-      expect(existsSync(sentinel)).toBe(false);
+      // .gitattributes 无法引用名字含空格的驱动，过滤器本就不会执行、哨兵本就不会生成，
+      // 故断言恒成立、无验证价值，删除。
     } finally {
       temp.cleanup();
     }
