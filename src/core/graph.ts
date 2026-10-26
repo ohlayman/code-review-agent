@@ -181,7 +181,12 @@ async function reportNode(state: ReviewStateType): Promise<Partial<ReviewStateTy
   if (skipped.length > 0) {
     limitations.push(`${skipped.length} 个变更文件因二进制或属性抑制未文本审查：${skipped.join("、")}`);
   }
-  return { findings, report: renderReport(findings, describeScope(state), limitations) };
+  // 存在被跳过文件时，即便其余文件未发现问题也不能给「可合并/未发现明确问题」，必须降级为
+  // 「需要补充信息/无法充分审查」，否则审查盲区会伪装成干净结论。
+  return {
+    findings,
+    report: renderReport(findings, describeScope(state), limitations, skipped.length > 0),
+  };
 }
 
 export function buildReviewGraph(deps: AgentDeps) {

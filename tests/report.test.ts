@@ -60,4 +60,22 @@ describe("renderReport", () => {
     // 原有 HTML 转义行为保持不变。
     expect(escapeHtml("<script>")).toBe("&lt;script&gt;");
   });
+
+  it("剔除 Unicode 行分隔符 U+2028/U+2029", () => {
+    const withSep = "a" + String.fromCharCode(0x2028) + "## 伪造" + String.fromCharCode(0x2029) + "### [P0]";
+    const escaped = escapeHtml(withSep);
+    // 行分隔符必须被剔除，否则 Markdown 会把其后的 ##/### 当成行首标题。
+    expect(escaped).not.toContain(String.fromCharCode(0x2028));
+    expect(escaped).not.toContain(String.fromCharCode(0x2029));
+    // 内容仍在，但已退化为单行（分隔符被替换为空格）。
+    expect(escaped).toBe("a ## 伪造 ### [P0]");
+  });
+
+  it("存在未文本审查文件时降级为无法充分审查/需要补充信息", () => {
+    const md = renderReport([], "s", [], true);
+    expect(md).toContain("审查状态：无法充分审查");
+    expect(md).toContain("总体建议：需要补充信息");
+    expect(md).not.toContain("未发现明确问题");
+    expect(md).not.toContain("可合并");
+  });
 });
