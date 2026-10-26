@@ -49,7 +49,7 @@ function renderFailureReport(state: ReviewStateType): string {
       "- 审查状态：无法充分审查",
       "- 总体建议：需要补充信息",
       "- 问题统计：P0 0 个 / P1 0 个 / P2 0 个 / P3 0 个（共 0 个）",
-      `- 审查范围：${describeScope(state)}`,
+      `- 审查范围：${escapeHtml(describeScope(state))}`,
       "- 审查范围及验证限制：",
       `  - ${escapeHtml(state.failure ?? "未知错误")}`,
       ...LIMITATIONS.map((item) => `  - ${item}`),
@@ -91,6 +91,19 @@ export function prefixBatchIds(batchIndex: number, candidates: Candidate[]): Can
   return candidates.map((candidate) => ({ ...candidate, id: `b${batchIndex}-${candidate.id}` }));
 }
 
+// 模型返回的候选 id 不可信：同批内可能出现重复 id，令复核按 id 匹配时错配或
+// 令覆盖守卫误判「已全覆盖」。确定性重写重复 id，保证全局唯一。
+export function ensureUniqueCandidateIds(candidates: Candidate[]): Candidate[] {
+  const seen = new Set<string>();
+  return candidates.map((c) => {
+    let id = c.id;
+    let n = 2;
+    while (seen.has(id)) id = `${c.id}-${n++}`;
+    seen.add(id);
+    return id === c.id ? c : { ...c, id };
+  });
+}
+
 async function discoverNode(state: ReviewStateType, deps: AgentDeps): Promise<Partial<ReviewStateType>> {
   if (state.failure) return {};
   try {
@@ -117,9 +130,10 @@ async function discoverNode(state: ReviewStateType, deps: AgentDeps): Promise<Pa
         const batchCandidates = await discoverCandidates(engineDeps, batch);
         candidates.push(...prefixBatchIds(batchIndex, batchCandidates));
       }
-      return { candidates };
+      // 先按批次加前缀保证跨批唯一，再去重同批内重复 id。
+      return { candidates: ensureUniqueCandidateIds(candidates) };
     }
-    return { candidates: await discoverCandidates(engineDeps, changeSet) };
+    return { candidates: ensureUniqueCandidateIds(await discoverCandidates(engineDeps, changeSet)) };
   } catch (error) {
     return { failure: `审查失败：${errorMessage(error)}` };
   }

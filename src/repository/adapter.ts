@@ -17,6 +17,19 @@ export interface RepositoryAdapter extends RepoAccess {
   gitLog(): Promise<string>;
 }
 
+// 只接受安全 token；含 `=`/空白/引号/控制字符会被 -c 的「首 = 分割」解析成别的 key，
+// 令中和失效。任何不安全名字必须抛错 fail-closed，绝不带着未中和的过滤器继续 diff。
+const SAFE_FILTER_DRIVER = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+// 表示仓库无工作区顶层（bare 仓库，或沿祖先未找到 .git 标记）。
+// revRaw 据此回退为「不加 -C、从 repoPath 直接读对象库」；worktree 命令必须失败关闭。
+class MissingWorktreeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MissingWorktreeError";
+  }
+}
+
 // git 把以 `-` 开头的参数当选项解析；被审仓库/LLM 提供的 rev/ref 未经校验会构成参数注入。
 function assertSafeRef(value: string, label: string): void {
   if (value.length === 0 || value.startsWith("-")) {
@@ -134,31 +147,61 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
         // 否则可能静默放宽到祖先仓库，扩大可信根。
         const code = (error as NodeJS.ErrnoException).code;
         if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
-        const parent = path.dirname(current);
-        if (parent === current) {
-          throw new Error("无法确定仓库顶层（未找到 .git 标记）");
-        }
-        current = parent;
       }
+      // 当前目录本身可能是 bare gitdir（如父工作区内的 nested.git）：
+      // 不能继续向上命中父仓库的 .git，否则会静默读错对象库。
+      if (await this.isBareGitdir(current)) {
+        throw new MissingWorktreeError("无工作区顶层（bare 仓库）");
+      }
+      const parent = path.dirname(current);
+      if (parent === current) {
+        throw new MissingWorktreeError("无法确定仓库顶层（未找到 .git 标记）");
+      }
+      current = parent;
+    }
+  }
+
+  private async isBareGitdir(dir: string): Promise<boolean> {
+    try {
+      const [head, objects] = await Promise.all([
+        stat(path.join(dir, "HEAD")),
+        stat(path.join(dir, "objects")),
+      ]);
+      return head.isFile() && objects.isDirectory();
+    } catch {
+      return false;
     }
   }
 
   // 敌对 .git/config 可定义 filter.<driver>.clean/smudge/process（由 .gitattributes 声明启用），
   // diff 比较工作区文件时会执行 clean 过滤器，从而在审查阶段运行任意命令；
   // --no-ext-diff/--no-textconv 都拦不住。这里枚举已配置的驱动名，供 getWorkingTreeDiff 中和。
-  // git config 无匹配时退出码为 1，simple-git 可能以空消息 reject，故任何错误都退化为空数组。
+  // 用 -z 按 NUL 分隔记录、按首个换行切 key，避免含空格/`=` 的驱动名被空白切分误读。
+  // 不安全的驱动名无法安全中和（会被 -c 的「首 = 分割」拆错 key），必须 fail-closed。
   private filterDrivers(): Promise<string[]> {
-    this.filterDriversPromise ??= this.raw(["config", "--get-regexp", "^filter\\."])
+    this.filterDriversPromise ??= this.raw(["config", "-z", "--get-regexp", "^filter\\."])
       .then((out) => {
         const drivers = new Set<string>();
-        for (const line of out.split("\n")) {
-          const key = line.split(/\s/)[0];
+        for (const record of out.split("\0")) {
+          if (record.length === 0) continue;
+          const nl = record.indexOf("\n");
+          const key = nl >= 0 ? record.slice(0, nl) : record;
           const match = /^filter\.(.+)\.(clean|smudge|process)$/.exec(key);
           if (match) drivers.add(match[1]);
         }
-        return [...drivers];
+        const names = [...drivers];
+        for (const name of names) {
+          if (!SAFE_FILTER_DRIVER.test(name)) {
+            throw new Error(`拒绝不安全的 filter 驱动名：${JSON.stringify(name)}`);
+          }
+        }
+        return names;
       })
-      .catch(() => []);
+      .catch((error) => {
+        // 仅「无匹配」视为无过滤器；真实枚举失败必须 fail-closed，不能带着未中和的过滤器继续。
+        if (error instanceof Error && error.message.trim() === "") return [];
+        throw error;
+      });
     return this.filterDriversPromise;
   }
 
@@ -188,14 +231,17 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
 
   // rev 模式命令（grep/ls-tree）默认相对 cwd：从子目录启动时只覆盖子目录，且输出路径
   // 也相对 cwd，会静默漏报顶层文件。用 -C 锚定到文件系统派生的顶层；不加 --work-tree，
-  // 保持 bare 仓库可用。bare 仓库没有 .git 标记会使 worktreeRoot() 抛错，此时退回原行为。
+  // 保持 bare 仓库可用。仅「确无工作区顶层」才回退为不加 -C；命令自身失败不回退重试，
+  // EACCES/ELOOP 等真实 IO 错误必须 fail-closed。
   private async revRaw(args: string[]): Promise<string> {
+    let top: string;
     try {
-      const top = await this.worktreeRoot();
-      return await this.raw(["-C", top, ...args]);
-    } catch {
-      return this.raw(args);
+      top = await this.worktreeRoot();
+    } catch (error) {
+      if (error instanceof MissingWorktreeError) return this.raw(args);
+      throw error;
     }
+    return this.raw(["-C", top, ...args]);
   }
 
   private async grepArgs(args: string[], worktree = false): Promise<string> {

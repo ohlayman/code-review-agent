@@ -189,6 +189,96 @@ describe("createContextTools", () => {
     }
   });
 
+  it("filter 驱动名含 = 时必须 fail-closed 而非被 -c 首 = 解析绕过", async () => {
+    const temp = await createTempRepo();
+    try {
+      const setupGit = simpleGit(temp.repoPath);
+      await writeFile(join(temp.repoPath, "data.txt"), "ORIGINAL\n", "utf8");
+      await setupGit.add(["-A"]);
+      await setupGit.commit("add data");
+      await writeFile(join(temp.repoPath, "data.txt"), "CHANGED_BY_REVIEW\n", "utf8");
+
+      const sentinel = join(temp.repoPath, "filter-pwned.sentinel");
+      const sentinelPosix = sentinel.replaceAll("\\", "/");
+      await writeFile(join(temp.repoPath, ".gitattributes"), "*.txt filter=x=y\n", "utf8");
+      await writeFile(
+        join(temp.repoPath, ".git", "config"),
+        `[filter "x=y"]\n\tclean = printf PWNED > ${sentinelPosix} && cat\n`,
+        { flag: "a" },
+      );
+
+      // 拼成 -c filter.x=y.clean=cat 会被 git 按首个 = 拆成 filter.x=y.clean=cat，
+      // 真正要覆盖的 filter.x=y.clean 原封不动，敌意命令仍会执行；必须直接拒绝。
+      await expect(new GitRepo(temp.repoPath).getWorkingTreeDiff()).rejects.toThrow(
+        /不安全的 filter 驱动名/,
+      );
+      expect(existsSync(sentinel)).toBe(false);
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it("filter 驱动名含空格时必须 fail-closed 而非被空白切分静默跳过", async () => {
+    const temp = await createTempRepo();
+    try {
+      const setupGit = simpleGit(temp.repoPath);
+      await writeFile(join(temp.repoPath, "data.txt"), "ORIGINAL\n", "utf8");
+      await setupGit.add(["-A"]);
+      await setupGit.commit("add data");
+      await writeFile(join(temp.repoPath, "data.txt"), "CHANGED_BY_REVIEW\n", "utf8");
+
+      const sentinel = join(temp.repoPath, "filter-pwned.sentinel");
+      const sentinelPosix = sentinel.replaceAll("\\", "/");
+      await writeFile(join(temp.repoPath, ".gitattributes"), "*.txt filter=evil thing\n", "utf8");
+      await writeFile(
+        join(temp.repoPath, ".git", "config"),
+        `[filter "evil thing"]\n\tclean = printf PWNED > ${sentinelPosix} && cat\n`,
+        { flag: "a" },
+      );
+
+      // 旧实现按空白切分会得到 filter.evil，正则不匹配后静默跳过；
+      // -z 必须精确取到含空格的名字并 fail-closed。
+      await expect(new GitRepo(temp.repoPath).getWorkingTreeDiff()).rejects.toThrow(
+        /不安全的 filter 驱动名/,
+      );
+      expect(existsSync(sentinel)).toBe(false);
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it("嵌套在父工作区内的 bare 仓库不被误锚定到父仓库", async () => {
+    const parent = await createTempRepo();
+    const workDir = await mkdtemp(join(tmpdir(), "code-review-agent-bare-work-"));
+    try {
+      const workGit = simpleGit(workDir);
+      await workGit.init();
+      await workGit.addConfig("user.name", "Test User", false, "local");
+      await workGit.addConfig("user.email", "test@example.com", false, "local");
+      await workGit.addConfig("commit.gpgsign", "false", false, "local");
+      await writeFile(join(workDir, "bare-only.txt"), "BARE_OWN_FILE\n", "utf8");
+      await workGit.add(["-A"]);
+      await workGit.commit("bare seed");
+      const sha = (await workGit.revparse(["HEAD"])).trim();
+
+      // bare 仓库放在父工作区内部：沿祖先找 .git 会命中父仓库，必须识别 bare 并拒绝锚定。
+      const bareDir = join(parent.repoPath, "nested.git");
+      await simpleGit().raw(["init", "--bare", bareDir]);
+      await workGit.push(bareDir, "HEAD:refs/heads/main");
+
+      const adapter = new GitRepo(bareDir);
+      await expect(adapter.getWorkingTreeDiff()).rejects.toThrow(/无工作区顶层|未找到 \.git 标记/);
+
+      // rev 模式仍应读 bare 自己的对象库，而不是父仓库。
+      const files = await adapter.listFiles(sha);
+      expect(files).toContain("bare-only.txt");
+      expect(files).not.toContain("src/parse.ts");
+    } finally {
+      parent.cleanup();
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  });
+
   it("core.worktree 不能改变工作区限制根", async () => {
     const temp = await createTempRepo();
     const fakeWorktree = await mkdtemp(join(tmpdir(), "code-review-agent-fake-worktree-"));

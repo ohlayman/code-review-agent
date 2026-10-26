@@ -59,6 +59,23 @@ describe("buildReviewGraph", () => {
     expect(out.report).not.toContain("未发现明确问题");
   });
 
+  it("失败报告中的审查范围被 HTML 转义", async () => {
+    const model = makeFakeModel(new Error("x"), []);
+    const graph = buildReviewGraph({ model: model as any, toolsFactory: createContextTools, repoFactory: (p) => new GitRepositoryAdapter(p), maxToolSteps: 2, maxFilesPerBatch: 20 });
+    // 该 ref 会让 parse 阶段的 git show 失败，从而进入失败报告路径。
+    const out = await graph.invoke({ repoPath: repo.repoPath, range: "commit", ref: "<img onerror=alert(1)>", base: null });
+    expect(out.report).toContain("&lt;img");
+    expect(out.report).not.toContain("<img onerror");
+  });
+
+  it("候选 id 重复时不得绕过复核覆盖守卫", async () => {
+    // 两个候选共用 id c1、只有一条复核；旧实现用 Set 判重会对两条都判「已覆盖」。
+    const model = makeFakeModel({ findings: [candidate, { ...candidate }] }, [verification]);
+    const graph = buildReviewGraph({ model: model as any, toolsFactory: createContextTools, repoFactory: (p) => new GitRepositoryAdapter(p), maxToolSteps: 2, maxFilesPerBatch: 20 });
+    const out = await graph.invoke({ repoPath: repo.repoPath, range: "commit", ref: repo.headCommit, base: null });
+    expect(out.report).toContain("无法充分审查");
+  });
+
   it("发现候选但复核返回空结果时报「无法充分审查」", async () => {
     const model = makeFakeModel({ findings: [candidate] }, []);
     const graph = buildReviewGraph({ model: model as any, toolsFactory: createContextTools, repoFactory: (p) => new GitRepositoryAdapter(p), maxToolSteps: 2, maxFilesPerBatch: 20 });
