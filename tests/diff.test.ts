@@ -5,7 +5,7 @@ const SAMPLE = `diff --git a/src/parse.ts b/src/parse.ts
 index 111..222 100644
 --- a/src/parse.ts
 +++ b/src/parse.ts
-@@ -1,4 +1,4 @@
+@@ -1,3 +1,4 @@
  export function divide(a, b) {
 -  return a / b;
 +  if (b === 0) throw new Error("div by zero");
@@ -21,10 +21,11 @@ describe("parseDiff", () => {
     expect(f.path).toBe("src/parse.ts");
     expect(f.status).toBe("modified");
     const del = f.hunks[0].lines.find((l) => l.type === "del");
-    const add = f.hunks[0].lines.find((l) => l.type === "add");
+    const adds = f.hunks[0].lines.filter((l) => l.type === "add");
     expect(del!.oldLine).toBe(2);
     expect(del!.newLine).toBeNull();
-    expect(add!.newLine).toBe(3);
+    expect(adds[0].newLine).toBe(2);
+    expect(adds[1].newLine).toBe(3);
   });
 
   it("空 diff 返回空 files", () => {

@@ -105,12 +105,10 @@ export function parseDiff(diffText: string, base?: string, head?: string): Chang
     const content = line.slice(1);
     if (prefix === "+") {
       hunk.lines.push({ type: "add", content, oldLine: null, newLine });
-      oldLine++;
       newLine++;
     } else if (prefix === "-") {
       hunk.lines.push({ type: "del", content, oldLine, newLine: null });
       oldLine++;
-      newLine++;
     } else if (prefix === " ") {
       hunk.lines.push({ type: "context", content, oldLine, newLine });
       oldLine++;

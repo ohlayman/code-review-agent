@@ -20,5 +20,6 @@ describe("GitRepositoryAdapter", () => {
     expect(text).toContain("divide");
     expect(await a.grep("divide")).toContain("src/parse.ts");
     expect(await a.listFiles()).toContain("src/parse.ts");
+    expect(await a.grep("zzz_not_found_identifier")).toBe("");
   });
 });

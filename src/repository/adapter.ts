@@ -25,7 +25,13 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
   }
 
   async grep(pattern: string, rev = "HEAD"): Promise<string> {
-    return this.git.raw(["grep", "-n", pattern, rev, "--"]);
+    try {
+      return await this.git.raw(["grep", "-n", pattern, rev, "--"]);
+    } catch (error) {
+      // git grep 无匹配时退出码为 1，部分 simple-git 版本会以空消息 reject。
+      if (error instanceof Error && error.message.trim() === "") return "";
+      throw error;
+    }
   }
 
   async listFiles(rev?: string): Promise<string[]> {
