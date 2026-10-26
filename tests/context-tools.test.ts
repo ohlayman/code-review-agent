@@ -334,6 +334,39 @@ describe("createContextTools", () => {
     }
   });
 
+  it("指向 bare 仓库的子目录时不得越过 bare 祖先锚定到父工作区", async () => {
+    const parent = await createTempRepo();
+    const workDir = await mkdtemp(join(tmpdir(), "code-review-agent-bare-work-"));
+    try {
+      const workGit = simpleGit(workDir);
+      await workGit.init();
+      await workGit.addConfig("user.name", "Test User", false, "local");
+      await workGit.addConfig("user.email", "test@example.com", false, "local");
+      await workGit.addConfig("commit.gpgsign", "false", false, "local");
+      await writeFile(join(workDir, "bare-only.txt"), "BARE_OWN_FILE\n", "utf8");
+      await workGit.add(["-A"]);
+      await workGit.commit("bare seed");
+      const sha = (await workGit.revparse(["HEAD"])).trim();
+
+      // bare 仓库放在父工作区内部；适配器指向 bare 仓库的子目录（不是 bare 根）。
+      const bareDir = join(parent.repoPath, "nested.git");
+      await simpleGit().raw(["init", "--bare", bareDir]);
+      await workGit.push(bareDir, "HEAD:refs/heads/main");
+
+      const subdir = join(bareDir, "refs");
+      const adapter = new GitRepo(subdir);
+      // 未修复时：越过 bare 祖先、命中父工作区 .git，diff 返回跨仓库字符串而非拒绝。
+      await expect(adapter.getWorkingTreeDiff()).rejects.toThrow(/无工作区顶层|未找到 \.git 标记/);
+      // rev 模式仍读 bare 自身的对象库，而不是父工作区。
+      const files = await adapter.listFiles(sha);
+      expect(files).toContain("bare-only.txt");
+      expect(files).not.toContain("src/parse.ts");
+    } finally {
+      parent.cleanup();
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  });
+
   it("core.worktree 不能改变工作区限制根", async () => {
     const temp = await createTempRepo();
     const fakeWorktree = await mkdtemp(join(tmpdir(), "code-review-agent-fake-worktree-"));

@@ -137,14 +137,7 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
   }
 
   private async findWorktreeRoot(): Promise<string> {
-    const realRoot = await realpath(this.repoPath);
-    // repoPath 本身若是 bare 仓库则无工作区顶层。用 git 自身判定，而非可伪造的
-    // 「HEAD 文件 + objects 目录」启发式：普通提交的 sub/HEAD + sub/objects 会让
-    // 子目录启动被误判为 bare，进而 revRaw 无锚回退、静默漏报顶层文件。
-    if (await this.isBareRepository(realRoot)) {
-      throw new MissingWorktreeError("无工作区顶层（bare 仓库）");
-    }
-    let current = realRoot;
+    let current = await realpath(this.repoPath);
     for (;;) {
       try {
         await stat(path.join(current, ".git"));
@@ -154,6 +147,14 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
         // 否则可能静默放宽到祖先仓库，扩大可信根。
         const code = (error as NodeJS.ErrnoException).code;
         if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+      }
+      // current 无 .git：可能是 bare gitdir（repoPath 自身是 bare，或父工作区内嵌套的
+      // bare 仓库——含指向 bare 仓库子目录如 nested.git/refs 的情况），也可能是普通目录。
+      // 必须逐级判定：只在起点查一次会越过 bare 祖先、命中父工作区 .git 而静默读错对象库。
+      // 用 git 判定而非可伪造的「HEAD+objects」启发式，普通提交的 sub/HEAD+sub/objects
+      // 会让 git 报「not a git repository」，从而继续上溯命中真正的 .git。
+      if (await this.isBareRepository(current)) {
+        throw new MissingWorktreeError("无工作区顶层（bare 仓库）");
       }
       const parent = path.dirname(current);
       if (parent === current) {
@@ -167,6 +168,7 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
   // rev-parse 不执行外部命令/过滤器，安全；伪造目录（仅有 HEAD+objects 文件、
   // 无有效 gitdir 结构）会报「not a git repository」而非 true，判为非 bare 继续上溯。
   // 仅「非 git 仓库」视为非 bare；EACCES 等真实错误必须 fail-closed。
+  // 注：完整合法的 bare 仓库若被作为普通文件提交进子目录，磁盘上与真实嵌套 bare 字节级不可区分，仍会被判为 bare；这是尊重 git 边界的正确行为，属设计内行为。
   private async isBareRepository(dir: string): Promise<boolean> {
     try {
       const out = await this.raw([`--git-dir=${dir}`, "rev-parse", "--is-bare-repository"]);
