@@ -25,19 +25,13 @@ function findRelatedTest(path: string, files: string[]): string | undefined {
   return candidates.find((candidate) => files.includes(candidate));
 }
 
-export function createContextTools(repo: RepoAccess, target?: ReviewTarget): StructuredTool[] {
-  // undefined 保持旧的 HEAD 语义，兼容既有调用方；rev/worktree 则读取被审版本。
-  const readContent = (path: string) => {
-    if (target?.kind === "rev") return repo.readFile(path, target.rev);
-    if (target?.kind === "worktree") return repo.readWorktreeFile(path);
-    return repo.readFile(path);
-  };
-  const grepContent = (pattern: string) => {
-    if (target?.kind === "rev") return repo.grep(pattern, target.rev);
-    if (target?.kind === "worktree") return repo.grepWorktree(pattern);
-    return repo.grep(pattern);
-  };
-  const listAll = () => (target?.kind === "rev" ? repo.listFiles(target.rev) : repo.listFiles());
+export function createContextTools(repo: RepoAccess, target: ReviewTarget): StructuredTool[] {
+  // target 必填：绝不静默回退到 HEAD，否则又会读取到与本次审查无关的旧代码。
+  const readContent = (path: string) =>
+    target.kind === "rev" ? repo.readFile(path, target.rev) : repo.readWorktreeFile(path);
+  const grepContent = (pattern: string) =>
+    target.kind === "rev" ? repo.grep(pattern, target.rev) : repo.grepWorktree(pattern);
+  const listAll = () => (target.kind === "rev" ? repo.listFiles(target.rev) : repo.listFiles());
 
   const readFile = tool(
     async ({ path }: { path: string }) => readContent(path),

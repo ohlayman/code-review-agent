@@ -78,7 +78,7 @@ async function executeToolCalls(
       const reason = error instanceof Error ? error.message : String(error);
       messages.push(
         new ToolMessage({
-          content: `工具执行失败 (${tc.name}): ${reason}`,
+          content: wrapAsUntrustedData(`工具执行失败 (${tc.name}): ${reason}`),
           tool_call_id: toolCallId,
         }),
       );
