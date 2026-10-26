@@ -37,15 +37,20 @@ function assertSafeRef(value: string, label: string): void {
   }
 }
 
-// 显式构造 git 子进程环境：剔除可能执行外部程序的守卫变量，保留 PATH/HOME 等必要变量，
+// 白名单：git 子进程只需最小环境。被审仓库 .git/config 可把 gpg.program/filter/fsmonitor
+// 等指向外部程序，这些程序继承 git 子进程环境；整体透传 process.env 会把 DEEPSEEK_API_KEY
+// 等密钥泄露给被审仓库控制的进程。只保留 git 运行所必需的最小集合。
 // 并注入 GIT_TERMINAL_PROMPT=0，确保 git 永不弹出交互式提示。
 function buildGitEnv(): NodeJS.ProcessEnv {
-  const guarded = new Set(["editor", "pager", "visual", "prefix", "ssh_askpass"]);
+  const whitelist = [
+    "PATH", "PATHEXT", "SystemRoot", "COMSPEC",
+    "TEMP", "TMP", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+    "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES",
+  ];
   const env: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    const lower = key.toLowerCase();
-    if (lower.startsWith("git_") || guarded.has(lower)) continue;
-    env[key] = value;
+  for (const key of whitelist) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
   }
   env.GIT_TERMINAL_PROMPT = "0";
   return env;
@@ -127,6 +132,14 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
       "core.fsmonitor=false",
       "-c",
       "core.pager=cat",
+      // 命令行 -c 优先级最高：log.showSignature=false 关闭签名校验（--format= 关不掉，
+      // 被审提交的 gpgsig 会触发仓库可控的 gpg.program）；diff.submodule=short 防敌意
+      // diff.submodule=log 在子模块里跑 git log；--no-pager 兜底关闭 pager.<cmd>。
+      "-c",
+      "log.showSignature=false",
+      "-c",
+      "diff.submodule=short",
+      "--no-pager",
       ...args,
     ]);
   }
