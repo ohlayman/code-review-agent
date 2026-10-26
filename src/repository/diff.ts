@@ -87,7 +87,8 @@ function stripGitPrefix(path: string, prefix: "a/" | "b/"): string {
 function parseDiffHeader(rest: string): { oldPath: string; newPath: string } | null {
   const plain = rest.lastIndexOf(" b/");
   const quoted = rest.lastIndexOf(' "b/');
-  const newStart = Math.max(plain, quoted);
+  // 引号 token 内部的引号必被转义为 `\"`，故 ` "b/` 只会是新路径（引号形式）的真实分界。
+  const newStart = quoted >= 0 ? quoted : plain;
   if (newStart < 0) return null;
   const oldPath = stripGitPrefix(decodeGitPath(rest.slice(0, newStart)), "a/");
   const newPath = stripGitPrefix(decodeGitPath(rest.slice(newStart + 1)), "b/");

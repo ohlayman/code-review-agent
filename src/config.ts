@@ -3,7 +3,7 @@ import { z } from "zod";
 export const ConfigSchema = z.object({
   apiKey: z.string().min(1),
   model: z.string().min(1).default("deepseek-chat"),
-  // 仅允许 https 且不含 userinfo：阻止 baseURL 指向 http/内网地址导致 API key 外泄（SSRF 面）。
+  // 仅允许 https 且不含 userinfo：阻断 http 明文传输与凭据内嵌，降低 API key 经 baseURL 外泄的风险。
   baseURL: z
     .string()
     .url()

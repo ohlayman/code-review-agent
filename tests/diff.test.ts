@@ -89,4 +89,13 @@ describe("parseDiff", () => {
     expect(cs.files[0].oldPath).toBe("旧.ts");
     expect(cs.files[0].path).toBe("新.ts");
   });
+
+  it("引号路径含字面 ` b/` 时不误判分界", () => {
+    const cs = parseDiff(
+      `diff --git "a/\\346\\226\\260 b/y.txt" "b/\\346\\226\\260 b/y.txt"\n--- "a/\\346\\226\\260 b/y.txt"\n+++ "b/\\346\\226\\260 b/y.txt"\n@@ -1 +1 @@\n-old\n+new\n`
+    );
+    expect(cs.files).toHaveLength(1);
+    expect(cs.files[0].path).toBe("新 b/y.txt");
+    expect(cs.files[0].status).toBe("modified");
+  });
 });
