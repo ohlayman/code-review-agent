@@ -24,4 +24,19 @@ describe("renderReport", () => {
     const md = renderReport([f({ severity: "P1" })], "s", []);
     expect(md).toContain("修复后合并");
   });
+
+  it("P0 给出建议阻止合并结论", () => {
+    const md = renderReport([f({ severity: "P0" })], "s", []);
+    expect(md).toContain("建议阻止合并");
+  });
+
+  it("仅有 P2/P3 给出可合并但建议改进结论", () => {
+    const md = renderReport([f({ severity: "P2" })], "s", []);
+    expect(md).toContain("可合并但建议改进");
+  });
+
+  it("无问题时给出可合并结论", () => {
+    const md = renderReport([], "s", []);
+    expect(md).toContain("可合并");
+  });
 });
