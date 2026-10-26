@@ -33,9 +33,13 @@ export type ChangeSet = z.infer<typeof ChangeSetSchema>;
 
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
-// git 默认 core.quotePath=true 时，含非 ASCII/特殊字符的路径会被双引号包裹并做 C 风格转义；
-// 不处理会导致这类文件整段被静默丢弃。这里解码转义、还原真实路径。
+// git 默认 core.quotePath=true 时，含非 ASCII/控制字符/引号/反斜杠的路径会被双引号包裹并做
+// C 风格转义（八进制表示 UTF-8 字节）；空格不会被引号包裹。这里解码转义、还原真实路径。
 function unescapeGitPath(raw: string): string {
+  const simple: Record<string, number> = {
+    n: 0x0a, t: 0x09, '"': 0x22, "\\": 0x5c,
+    a: 0x07, b: 0x08, f: 0x0c, v: 0x0b, r: 0x0d,
+  };
   const bytes: number[] = [];
   for (let i = 0; i < raw.length; i++) {
     if (raw[i] !== "\\") {
@@ -43,11 +47,10 @@ function unescapeGitPath(raw: string): string {
       continue;
     }
     const next = raw[i + 1];
-    if (next === "n") { bytes.push(0x0a); i++; }
-    else if (next === "t") { bytes.push(0x09); i++; }
-    else if (next === '"') { bytes.push(0x22); i++; }
-    else if (next === "\\") { bytes.push(0x5c); i++; }
-    else if (next !== undefined && /[0-7]/.test(next)) {
+    if (next !== undefined && next in simple) {
+      bytes.push(simple[next]);
+      i++;
+    } else if (next !== undefined && /[0-7]/.test(next)) {
       let j = i + 1;
       let val = 0;
       let n = 0;
@@ -65,23 +68,30 @@ function unescapeGitPath(raw: string): string {
   return Buffer.from(bytes).toString("utf8");
 }
 
-// 读取 `diff --git ` 后的一个路径 token（裸 token 或双引号包裹），并剥离 a/ b/ 前缀。
-function readDiffPath(raw: string, start: number): { path: string; end: number } | null {
-  if (start >= raw.length) return null;
-  let body: string;
-  let end: number;
-  if (raw[start] === '"') {
-    const close = raw.indexOf('"', start + 1);
-    if (close === -1) return null;
-    body = raw.slice(start + 1, close);
-    end = close + 1;
-  } else {
-    const space = raw.indexOf(" ", start);
-    end = space === -1 ? raw.length : space;
-    body = raw.slice(start, end);
+// 解码单个路径 token：带双引号包裹则解转义，否则原样返回（未引号路径已是正确 UTF-8）。
+function decodeGitPath(raw: string): string {
+  if (raw.length >= 2 && raw[0] === '"' && raw[raw.length - 1] === '"') {
+    return unescapeGitPath(raw.slice(1, -1));
   }
-  const path = body.startsWith("a/") ? body.slice(2) : body.startsWith("b/") ? body.slice(2) : body;
-  return { path: unescapeGitPath(path), end };
+  return raw;
+}
+
+// 剥离 git 在路径前加的 a/ b/ 前缀。
+function stripGitPrefix(path: string, prefix: "a/" | "b/"): string {
+  return path.startsWith(prefix) ? path.slice(2) : path;
+}
+
+// 解析 `diff --git ` 后的 `<old> <new>`。新路径以 `b/`（或 `"b/`）开头，其前空格为分界；
+// 用 lastIndexOf 与旧贪婪正则语义一致。注意：文件名若含字面 ` b/` 子串，unified diff 头部
+// 存在格式固有歧义（git 限制），需 NUL 分隔的 raw 输出才能根治，属已知限制。
+function parseDiffHeader(rest: string): { oldPath: string; newPath: string } | null {
+  const plain = rest.lastIndexOf(" b/");
+  const quoted = rest.lastIndexOf(' "b/');
+  const newStart = Math.max(plain, quoted);
+  if (newStart < 0) return null;
+  const oldPath = stripGitPrefix(decodeGitPath(rest.slice(0, newStart)), "a/");
+  const newPath = stripGitPrefix(decodeGitPath(rest.slice(newStart + 1)), "b/");
+  return { oldPath, newPath };
 }
 
 export function parseDiff(diffText: string, base?: string, head?: string): ChangeSet {
@@ -104,15 +114,12 @@ export function parseDiff(diffText: string, base?: string, head?: string): Chang
 
     if (line.startsWith("diff --git ")) {
       flush();
-      const first = readDiffPath(line, "diff --git ".length);
-      if (!first) continue;
-      const second = readDiffPath(line, first.end + 1);
-      if (!second) continue;
-      const oldPath = first.path;
-      const path = second.path;
-      const renamed = oldPath !== path;
+      const parsed = parseDiffHeader(line.slice("diff --git ".length));
+      if (!parsed) continue;
+      const { oldPath, newPath } = parsed;
+      const renamed = oldPath !== newPath;
       current = {
-        path,
+        path: newPath,
         oldPath: renamed ? oldPath : null,
         status: renamed ? "renamed" : "modified",
         hunks: [],
@@ -141,10 +148,10 @@ export function parseDiff(diffText: string, base?: string, head?: string): Chang
         current.status = "deleted";
       } else if (line.startsWith("rename from ")) {
         current.status = "renamed";
-        current.oldPath = line.slice("rename from ".length);
+        current.oldPath = decodeGitPath(line.slice("rename from ".length));
       } else if (line.startsWith("rename to ")) {
         current.status = "renamed";
-        current.path = line.slice("rename to ".length);
+        current.path = decodeGitPath(line.slice("rename to ".length));
       } else if (line.startsWith("--- /dev/null")) {
         current.status = "added";
       } else if (line.startsWith("+++ /dev/null")) {

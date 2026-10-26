@@ -56,4 +56,37 @@ describe("parseDiff", () => {
     expect(cs.files[0].path).toBe("文档.ts");
     expect(cs.files[0].status).toBe("modified");
   });
+
+  it("含空格文件名不被截断（git 对空格不加引号）", () => {
+    const cs = parseDiff(
+      `diff --git a/doc file.txt b/doc file.txt\n--- a/doc file.txt\n+++ b/doc file.txt\n@@ -1 +1 @@\n-old\n+new\n`
+    );
+    expect(cs.files).toHaveLength(1);
+    expect(cs.files[0].path).toBe("doc file.txt");
+    expect(cs.files[0].status).toBe("modified");
+  });
+
+  it("未引号的非 ASCII 路径（core.quotePath=false）不被损坏", () => {
+    const cs = parseDiff(
+      `diff --git a/文档.ts b/文档.ts\n--- a/文档.ts\n+++ b/文档.ts\n@@ -1 +1 @@\n-old\n+new\n`
+    );
+    expect(cs.files[0].path).toBe("文档.ts");
+    expect(cs.files[0].status).toBe("modified");
+  });
+
+  it("路径含转义引号时正确解码", () => {
+    const cs = parseDiff(
+      `diff --git "a/q\\"uote.txt" "b/q\\"uote.txt"\n--- "a/q\\"uote.txt"\n+++ "b/q\\"uote.txt"\n@@ -1 +1 @@\n-old\n+new\n`
+    );
+    expect(cs.files[0].path).toBe('q"uote.txt');
+  });
+
+  it("重命名的非 ASCII 路径被正确解码", () => {
+    const cs = parseDiff(
+      `diff --git "a/\\346\\227\\247.ts" "b/\\346\\226\\260.ts"\nsimilarity index 100%\nrename from "\\346\\227\\247.ts"\nrename to "\\346\\226\\260.ts"\n`
+    );
+    expect(cs.files[0].status).toBe("renamed");
+    expect(cs.files[0].oldPath).toBe("旧.ts");
+    expect(cs.files[0].path).toBe("新.ts");
+  });
 });
