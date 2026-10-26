@@ -193,6 +193,12 @@ describe("createContextTools", () => {
       expect(diff).not.toContain("OUTSIDE_SENTINEL");
       const grepOut = await adapter.grepWorktree("OUTSIDE_CONFIG_SENTINEL");
       expect(grepOut).not.toContain("OUTSIDE_CONFIG_SENTINEL");
+
+      // 正向护栏：真实工作区的未提交改动仍能被 diff 出来，证明 diff 读的是真实根而非伪 worktree。
+      await writeFile(join(temp.repoPath, "src", "config.ts"), "REAL_UNCOMMITTED_CHANGE\n", "utf8");
+      const realDiff = await adapter.getWorkingTreeDiff();
+      expect(realDiff).toContain("REAL_UNCOMMITTED_CHANGE");
+      expect(realDiff).not.toContain("OUTSIDE_CONFIG_SENTINEL");
     } finally {
       temp.cleanup();
       rmSync(outsideDir, { recursive: true, force: true });

@@ -97,17 +97,17 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
   }
 
   // 被审仓库的 .git/config 可将 fsmonitor/pager 指向外部程序，也可用 core.worktree
-  // 把 diff/grep 重定向到仓库外；这些选项必须位于子命令之前，故统一经此包装。
-  // --work-tree 取文件系统派生的可信顶层，优先于仓库配置中的 core.worktree。
+  // 把 diff/grep 重定向到仓库外。fsmonitor/pager 统一在此关闭；core.worktree 的重定向
+  // 只在读工作区的命令（worktreeRaw / getWorkingTreeDiff）上用 --work-tree 覆盖——
+  // rev 类命令读对象库、不接触工作区，无需也不应强制工作区根（否则 bare 仓库的
+  // commit/branch 审查会因找不到 .git 标记而失败关闭）。
   // 路径作为独立 argv 元素传递（不经 shell），含空格也安全。
   private async raw(args: string[]): Promise<string> {
-    const topLevel = await this.worktreeRoot();
     return this.git.raw([
       "-c",
       "core.fsmonitor=false",
       "-c",
       "core.pager=cat",
-      `--work-tree=${topLevel}`,
       ...args,
     ]);
   }
@@ -140,10 +140,11 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
     }
   }
 
-  // worktree 语义的 git 命令统一以顶层为工作目录，保证路径与 diff 输出一致。
+  // worktree 语义的 git 命令统一以顶层为工作目录，保证路径与 diff 输出一致；
+  // 同时用 --work-tree 钉住可信顶层，避免 core.worktree 把工作区重定向到仓库外。
   private async worktreeRaw(args: string[]): Promise<string> {
     const topLevel = await this.worktreeRoot();
-    return this.raw(["-C", topLevel, ...args]);
+    return this.raw(["-C", topLevel, `--work-tree=${topLevel}`, ...args]);
   }
 
   private async grepArgs(args: string[], worktree = false): Promise<string> {
@@ -185,7 +186,14 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
   }
 
   async getWorkingTreeDiff(): Promise<string> {
-    return this.raw(["diff", "--no-ext-diff", "--no-textconv", "HEAD"]);
+    const topLevel = await this.worktreeRoot();
+    return this.raw([
+      `--work-tree=${topLevel}`,
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "HEAD",
+    ]);
   }
 
   async getCommitDiff(sha: string): Promise<string> {
