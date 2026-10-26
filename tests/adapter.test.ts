@@ -22,4 +22,9 @@ describe("GitRepositoryAdapter", () => {
     expect(await a.listFiles()).toContain("src/parse.ts");
     expect(await a.grep("zzz_not_found_identifier")).toBe("");
   });
+
+  it("拒绝以 - 开头的 rev（防参数注入）", async () => {
+    const a = new GitRepositoryAdapter(repo.repoPath);
+    await expect(a.readFile("x.ts", "--evil")).rejects.toThrow();
+  });
 });

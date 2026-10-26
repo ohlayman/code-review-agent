@@ -47,4 +47,13 @@ describe("parseDiff", () => {
     const cs = parseDiff(`diff --git a/gone.ts b/gone.ts\ndeleted file mode 100644\n--- a/gone.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n`);
     expect(cs.files[0].status).toBe("deleted");
   });
+
+  it("不丢弃含非 ASCII（引号+八进制转义）路径的文件", () => {
+    const cs = parseDiff(
+      `diff --git "a/\\346\\226\\207\\346\\241\\243.ts" "b/\\346\\226\\207\\346\\241\\243.ts"\n--- "a/\\346\\226\\207\\346\\241\\243.ts"\n+++ "b/\\346\\226\\207\\346\\241\\243.ts"\n@@ -1 +1 @@\n-old\n+new\n`
+    );
+    expect(cs.files).toHaveLength(1);
+    expect(cs.files[0].path).toBe("文档.ts");
+    expect(cs.files[0].status).toBe("modified");
+  });
 });
