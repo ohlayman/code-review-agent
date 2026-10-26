@@ -7,8 +7,7 @@ import {
 } from "@langchain/core/messages";
 import type { StructuredTool } from "@langchain/core/tools";
 import type { ChatOpenAI } from "@langchain/openai";
-import { OutputParserException } from "@langchain/core/output_parsers";
-import { ZodError, type z } from "zod";
+import type { z } from "zod";
 import type { ChangeSet } from "../repository/diff.js";
 import type { Candidate, VerificationResult } from "../llm/schemas.js";
 import { CandidateListSchema, VerificationListSchema } from "../llm/schemas.js";
@@ -22,13 +21,6 @@ export interface EngineDeps {
 
 // 工具结果上限：读取大文件时避免上下文无限膨胀。
 const MAX_TOOL_RESULT_CHARS = 8000;
-
-// 仅「结构化输出解析失败」可降级为空结果；其余错误属基础设施故障，必须冒泡。
-function isStructuredParseError(error: unknown): boolean {
-  // OutputParserException 的 name 是 "Error"（靠 lc_error_code 标识），必须用 instanceof 判，
-  // 不能用 name 字符串匹配。ZodError 兜底：部分解析路径会直接抛裸 ZodError。
-  return error instanceof ZodError || error instanceof OutputParserException;
-}
 
 export const DISCOVER_PROMPT = `你是一名资深代码审查员，优先审查 TypeScript/JavaScript 项目。
 你的任务：基于给定的 git 变更（diff）发现真实存在的代码问题候选。
@@ -115,17 +107,12 @@ async function runWithTools<T>(
     const toolMessages = await executeToolCalls(resp.tool_calls, tools);
     current = [...current, resp, ...toolMessages];
   }
-  try {
-    const out = (await model
-      .withStructuredOutput(outSchema as z.ZodType<Record<string, unknown>>)
-      .invoke([...current, new HumanMessage("请输出结构化结果")])) as Record<string, T[] | undefined>;
-    return out[outKey] ?? [];
-  } catch (error) {
-    // 仅吞掉「结构化输出解析失败」（畸形输出），降级为空；网络/鉴权/配额等基础设施错误必须
-    // 冒泡（fail-closed），否则审查在「根本无法完成」时误报「未发现问题」（假阴性）。
-    if (isStructuredParseError(error)) return [];
-    throw error;
-  }
+  // 不吞任何错误：基础设施失败与结构化输出解析失败都必须冒泡（fail-closed），
+  // 由 Agent Core（Task 7）捕获后报「无法充分审查」，避免把失败渲染成「未发现问题」。
+  const out = (await model
+    .withStructuredOutput(outSchema as z.ZodType<Record<string, unknown>>)
+    .invoke([...current, new HumanMessage("请输出结构化结果")])) as Record<string, T[] | undefined>;
+  return out[outKey] ?? [];
 }
 
 // 将 diff 渲染为带新文件行号的文本，便于模型定位与引用。

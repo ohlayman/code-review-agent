@@ -31,10 +31,11 @@ describe("engine", () => {
     expect(out).toEqual([verification]);
   });
 
-  it("模型返回畸形结构化输出时降级为空列表而非抛异常", async () => {
+  it("模型返回畸形结构化输出时抛异常（fail-closed）", async () => {
     const model = makeFakeModel(new OutputParserException("Failed to parse"), []);
-    const out = await discoverCandidates({ model: model as any, tools: [], maxToolSteps: 2 }, diff);
-    expect(out).toEqual([]);
+    await expect(
+      discoverCandidates({ model: model as any, tools: [], maxToolSteps: 2 }, diff),
+    ).rejects.toThrow("Failed to parse");
   });
 
   it("模型网络/鉴权错误时冒泡而非降级（fail-closed）", async () => {
