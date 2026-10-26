@@ -3,6 +3,7 @@ import { discoverCandidates, verifyCandidates } from "../src/review/engine.js";
 import { makeFakeModel } from "./helpers/fake-model.js";
 import { parseDiff } from "../src/repository/diff.js";
 import type { Candidate, VerificationResult } from "../src/llm/schemas.js";
+import { CandidateListSchema } from "../src/llm/schemas.js";
 
 const diff = parseDiff(`diff --git a/src/parse.ts b/src/parse.ts
 --- a/src/parse.ts
@@ -30,10 +31,18 @@ describe("engine", () => {
     expect(out).toEqual([verification]);
   });
 
-  it("模型返回畸形输出时降级为空列表而非抛异常", async () => {
-    const model = makeFakeModel(new Error("bad json"), []);
+  it("模型返回畸形结构化输出时降级为空列表而非抛异常", async () => {
+    const malformed = CandidateListSchema.safeParse({ findings: "not-an-array" });
+    const model = makeFakeModel(malformed.error!, []);
     const out = await discoverCandidates({ model: model as any, tools: [], maxToolSteps: 2 }, diff);
     expect(out).toEqual([]);
+  });
+
+  it("模型网络/鉴权错误时冒泡而非降级（fail-closed）", async () => {
+    const model = makeFakeModel(new Error("fetch failed: 401"), []);
+    await expect(
+      discoverCandidates({ model: model as any, tools: [], maxToolSteps: 2 }, diff),
+    ).rejects.toThrow("fetch failed: 401");
   });
 
   it("工具循环会调用模型请求的工具", async () => {
@@ -60,6 +69,13 @@ describe("engine", () => {
     ]]);
     const out = await discoverCandidates({ model: model as any, tools: [throwingTool as any], maxToolSteps: 2 }, diff);
     expect(out).toEqual([candidate]); // 工具失败不中断，仍能抽取结果
+  });
+
+  it("verifyCandidates 丢弃 id 不匹配的复核结果", async () => {
+    const wrongId = { ...verification, id: "WRONG" };
+    const model = makeFakeModel({}, [wrongId]);
+    const out = await verifyCandidates({ model: model as any, tools: [], maxToolSteps: 2 }, [candidate], diff);
+    expect(out).toEqual([]);
   });
 
   it("verifyCandidates 逐条复核（每个候选一次调用）", async () => {
