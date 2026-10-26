@@ -448,6 +448,19 @@ describe("createContextTools", () => {
     }
   });
 
+  it("worktree 模式拒绝任意路径段的 .git 与 .env", async () => {
+    const temp = await createTempRepo();
+    try {
+      const [readFile] = createContextTools(new GitRepo(temp.repoPath), { kind: "worktree" });
+      // .git / .env 出现在中间段或作为目录段时，旧的首段/末段检查会漏过。
+      await expect(readFile.invoke({ path: "vendor/x/.git/config" })).rejects.toThrow(/敏感路径/);
+      await expect(readFile.invoke({ path: ".env/local" })).rejects.toThrow(/敏感路径/);
+      await expect(readFile.invoke({ path: "a/.env.local/x" })).rejects.toThrow(/敏感路径/);
+    } finally {
+      temp.cleanup();
+    }
+  });
+
   it("worktree 模式按真实路径复查敏感目标", async (ctx) => {
     const temp = await createTempRepo();
     try {

@@ -58,10 +58,13 @@ function pathSegments(value: string): string[] {
 
 // 仓库自带的 .env / .git 属于敏感内容，不得回传给模型。
 function assertNotSensitivePath(segments: string[], displayPath: string): void {
-  if (segments.length === 0) return;
-  const base = segments[segments.length - 1].toLowerCase();
-  if (segments[0].toLowerCase() === ".git" || base === ".env" || base.startsWith(".env.")) {
-    throw new Error(`拒绝读取敏感路径：${JSON.stringify(displayPath)}`);
+  for (const segment of segments) {
+    const lower = segment.toLowerCase();
+    // 任意路径段（大小写不敏感）命中 .git 目录或 .env/.env.* 文件/目录即拒绝，
+    // 防止 vendor/x/.git/config 或 .env/local 之类中间段/目录段绕过首段检查。
+    if (lower === ".git" || lower === ".env" || lower.startsWith(".env.")) {
+      throw new Error(`拒绝读取敏感路径：${JSON.stringify(displayPath)}`);
+    }
   }
 }
 
