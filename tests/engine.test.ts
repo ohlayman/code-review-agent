@@ -35,4 +35,39 @@ describe("engine", () => {
     const out = await discoverCandidates({ model: model as any, tools: [], maxToolSteps: 2 }, diff);
     expect(out).toEqual([]);
   });
+
+  it("工具循环会调用模型请求的工具", async () => {
+    const calls: unknown[] = [];
+    const readFileTool = {
+      name: "read_file",
+      invoke: async (args: unknown) => { calls.push(args); return "content"; },
+    };
+    const model = makeFakeModel({ findings: [candidate] }, [], [[
+      { name: "read_file", args: { path: "src/parse.ts" }, id: "call_1" },
+    ]]);
+    const out = await discoverCandidates({ model: model as any, tools: [readFileTool as any], maxToolSteps: 2 }, diff);
+    expect(calls).toEqual([{ path: "src/parse.ts" }]);
+    expect(out).toEqual([candidate]);
+  });
+
+  it("工具抛错时降级为提示消息而非整阶段失败", async () => {
+    const throwingTool = {
+      name: "read_file",
+      invoke: async () => { throw new Error("git show failed"); },
+    };
+    const model = makeFakeModel({ findings: [candidate] }, [], [[
+      { name: "read_file", args: { path: "src/missing.ts" }, id: "call_1" },
+    ]]);
+    const out = await discoverCandidates({ model: model as any, tools: [throwingTool as any], maxToolSteps: 2 }, diff);
+    expect(out).toEqual([candidate]); // 工具失败不中断，仍能抽取结果
+  });
+
+  it("verifyCandidates 逐条复核（每个候选一次调用）", async () => {
+    const c2: Candidate = { ...candidate, id: "c2" };
+    const v1 = { ...verification, id: "c1" };
+    const v2 = { ...verification, id: "c2" };
+    const model = makeFakeModel({}, [v1, v2]);
+    const out = await verifyCandidates({ model: model as any, tools: [], maxToolSteps: 2 }, [candidate, c2], diff);
+    expect(out).toEqual([v1, v2]);
+  });
 });

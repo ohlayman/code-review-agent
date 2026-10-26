@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { GitRepositoryAdapter } from "../src/repository/adapter.js";
+import { createReviewModel } from "../src/llm/adapter.js";
 import { createTempRepo } from "./helpers/temp-repo.js";
 
 let repo: { repoPath: string; headCommit: string; cleanup: () => void };
@@ -26,5 +27,19 @@ describe("GitRepositoryAdapter", () => {
   it("拒绝以 - 开头的 rev（防参数注入）", async () => {
     const a = new GitRepositoryAdapter(repo.repoPath);
     await expect(a.readFile("x.ts", "--evil")).rejects.toThrow();
+  });
+});
+
+describe("createReviewModel", () => {
+  it("映射 config 到 ChatOpenAI（模型名与温度）", () => {
+    const m = createReviewModel({
+      apiKey: "k",
+      model: "deepseek-chat",
+      baseURL: "https://api.deepseek.com",
+      maxToolSteps: 8,
+      maxFilesPerBatch: 20,
+    });
+    expect((m as any).model).toBe("deepseek-chat");
+    expect(m.temperature).toBe(0);
   });
 });

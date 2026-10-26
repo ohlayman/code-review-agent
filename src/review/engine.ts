@@ -38,22 +38,35 @@ export const VERIFY_PROMPT = `你是一名严格的复核员，负责逐条验�
 4. evidence 必须引用具体证据（代码片段、文件路径与行号、调用链），不得空泛。
 5. id 必须与候选 id 保持一致。`;
 
-// 按工具名匹配并执行模型请求的 tool_calls；未知工具返回提示消息，保证循环可降级而非抛错。
+// 按工具名匹配并执行模型请求的 tool_calls；未知工具或执行失败均回填提示消息，
+// 保证循环可降级、模型能换路径重试，而不是让整个阶段 reject。
 async function executeToolCalls(
   toolCalls: ToolCall[],
   tools: StructuredTool[],
 ): Promise<ToolMessage[]> {
   const messages: ToolMessage[] = [];
   for (const tc of toolCalls) {
+    // 正常 tool_call 恒带 id；空 id 会被 OpenAI 兼容端点拒绝，故兜底非空占位。
+    const toolCallId = tc.id ?? "call_unknown";
     const target = tools.find((tool) => tool.name === tc.name);
     if (!target) {
       messages.push(
-        new ToolMessage({ content: `未知工具: ${tc.name}`, tool_call_id: tc.id ?? "" }),
+        new ToolMessage({ content: `未知工具: ${tc.name}`, tool_call_id: toolCallId }),
       );
       continue;
     }
-    const result = await target.invoke(tc.args);
-    messages.push(new ToolMessage({ content: String(result), tool_call_id: tc.id ?? "" }));
+    try {
+      const result = await target.invoke(tc.args);
+      messages.push(new ToolMessage({ content: String(result), tool_call_id: toolCallId }));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      messages.push(
+        new ToolMessage({
+          content: `工具执行失败 (${tc.name}): ${reason}`,
+          tool_call_id: toolCallId,
+        }),
+      );
+    }
   }
   return messages;
 }
