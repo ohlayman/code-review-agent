@@ -1,4 +1,4 @@
-import { readFile as readDiskFile, realpath } from "node:fs/promises";
+import { readFile as readDiskFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { simpleGit, type SimpleGit } from "simple-git";
 
@@ -86,7 +86,8 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
     this.git = simpleGit({
       baseDir: this.repoPath,
       allowEnvironment: ["GIT_TERMINAL_PROMPT"],
-      // 允许在 raw 中固定关闭 fsmonitor/pager 并用 -C 锚定 git 顶层；取值均来自本文件或 git 自身，不来自被审仓库内容。
+      // 允许在 raw 中固定关闭 fsmonitor/pager 并用 -C 锚定文件系统派生的仓库顶层；
+      // 取值均来自本文件或可信 repoPath，不来自被审仓库内容。
       unsafe: {
         allowUnsafeFsMonitor: true,
         allowUnsafePager: true,
@@ -101,17 +102,33 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
     return this.git.raw(["-c", "core.fsmonitor=false", "-c", "core.pager=cat", ...args]);
   }
 
-  // git 输出的路径相对仓库顶层；从子目录启动时必须锚定顶层，worktree 读取才不会 ENOENT。
-  private gitTopLevel(): Promise<string> {
-    this.worktreeRootPromise ??= this.raw(["rev-parse", "--show-toplevel"]).then((out) =>
-      realpath(out.trim()),
-    );
+  // 从可信的 repoPath 向上查找 .git 标记（目录或文件）确定顶层。
+  // 不能使用 `git rev-parse --show-toplevel`：它读取仓库可控的 core.worktree，
+  // 恶意仓库可借此把限制根指向任意目录。
+  private worktreeRoot(): Promise<string> {
+    this.worktreeRootPromise ??= this.findWorktreeRoot();
     return this.worktreeRootPromise;
+  }
+
+  private async findWorktreeRoot(): Promise<string> {
+    let current = await realpath(this.repoPath);
+    for (;;) {
+      try {
+        await stat(path.join(current, ".git"));
+        return current;
+      } catch {
+        const parent = path.dirname(current);
+        if (parent === current) {
+          throw new Error("无法确定仓库顶层（未找到 .git 标记）");
+        }
+        current = parent;
+      }
+    }
   }
 
   // worktree 语义的 git 命令统一以顶层为工作目录，保证路径与 diff 输出一致。
   private async worktreeRaw(args: string[]): Promise<string> {
-    const topLevel = await this.gitTopLevel();
+    const topLevel = await this.worktreeRoot();
     return this.raw(["-C", topLevel, ...args]);
   }
 
@@ -132,7 +149,7 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
   }
 
   async readWorktreeFile(relativePath: string): Promise<string> {
-    const realRoot = await this.gitTopLevel();
+    const realRoot = await this.worktreeRoot();
     return readDiskFile(await resolveWorktreePath(realRoot, relativePath), "utf8");
   }
 

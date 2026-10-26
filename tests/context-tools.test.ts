@@ -121,18 +121,47 @@ describe("createContextTools", () => {
     }
   });
 
-  it("从子目录启动时以 git 顶层为根读取工作区文件", async () => {
+  it("从子目录启动时以 .git 所在顶层为根读取工作区文件", async () => {
     const temp = await createTempRepo();
     try {
       const nested = join(temp.repoPath, "nested");
       await mkdir(nested, { recursive: true });
+      await writeFile(join(temp.repoPath, "root.txt"), "TOP_LEVEL_ONLY\n", "utf8");
       const tools = createContextTools(new GitRepo(nested), { kind: "worktree" });
       const [readFile] = tools;
+      // 顶层相对路径（含顶层文件）都能从子目录适配器读到，证明根是包含 .git 的目录。
       expect(String(await readFile.invoke({ path: "src/parse.ts" }))).toContain("divide");
+      expect(String(await readFile.invoke({ path: "root.txt" }))).toContain("TOP_LEVEL_ONLY");
       const list = tools.find((t) => t.name === "list_files")!;
       expect(String(await list.invoke({}))).toContain("src/parse.ts");
     } finally {
       temp.cleanup();
+    }
+  });
+
+  it("core.worktree 不能改变工作区限制根", async () => {
+    const temp = await createTempRepo();
+    const fakeWorktree = await mkdtemp(join(tmpdir(), "code-review-agent-fake-worktree-"));
+    try {
+      await writeFile(join(fakeWorktree, "fake-only.ts"), "FAKE_ROOT_SENTINEL\n", "utf8");
+      // 非 bare 仓库中 git 通常忽略 core.worktree；本实现完全不读 git 配置，
+      // 直接向 .git/config 追加伪 worktree 以验证根仍来自文件系统遍历。
+      const fakePath = fakeWorktree.replaceAll("\\", "/");
+      await writeFile(
+        join(temp.repoPath, ".git", "config"),
+        `[core]\n\tworktree = ${fakePath}\n`,
+        { flag: "a" },
+      );
+
+      const [readFile] = createContextTools(new GitRepo(join(temp.repoPath, "src")), {
+        kind: "worktree",
+      });
+      expect(String(await readFile.invoke({ path: "src/parse.ts" }))).toContain("divide");
+      // 仅存在于伪 worktree 的文件不在真实根内，读取必须失败。
+      await expect(readFile.invoke({ path: "fake-only.ts" })).rejects.toThrow();
+    } finally {
+      temp.cleanup();
+      rmSync(fakeWorktree, { recursive: true, force: true });
     }
   });
 
