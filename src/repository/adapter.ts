@@ -38,27 +38,41 @@ function buildGitEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
+// 拆分路径段并丢弃空段与 `.`，避免 `./.git/config` 之类前缀绕过首段检查。
+function pathSegments(value: string): string[] {
+  return value.split(/[\\/]/).filter((segment) => segment.length > 0 && segment !== ".");
+}
+
+// 仓库自带的 .env / .git 属于敏感内容，不得回传给模型。
+function assertNotSensitivePath(segments: string[], displayPath: string): void {
+  if (segments.length === 0) return;
+  const base = segments[segments.length - 1].toLowerCase();
+  if (segments[0].toLowerCase() === ".git" || base === ".env" || base.startsWith(".env.")) {
+    throw new Error(`拒绝读取敏感路径：${JSON.stringify(displayPath)}`);
+  }
+}
+
 // 工作区读取必须严格限定在仓库顶层目录内：先做词法校验与敏感路径拒绝，
-// 再用 realpath 解析真实路径后做前缀校验，防止符号链接把读取引向仓库外。
+// 再用 realpath 解析真实路径后做前缀校验，并按真实路径复查敏感目标，
+// 防止符号链接把读取引向仓库外或仓库内的 .git/.env。
 async function resolveWorktreePath(realRoot: string, relativePath: string): Promise<string> {
-  const segments = relativePath.split(/[\\/]/);
+  const requestedSegments = pathSegments(relativePath);
   if (
     relativePath.length === 0 ||
     path.isAbsolute(relativePath) ||
-    segments.includes("..")
+    requestedSegments.includes("..")
   ) {
     throw new Error(`非法路径（必须为仓库内相对路径）：${JSON.stringify(relativePath)}`);
   }
-  const base = segments[segments.length - 1].toLowerCase();
-  // 仓库自带的 .env / .git 属于敏感内容，不得回传给模型。
-  if (segments[0].toLowerCase() === ".git" || base === ".env" || base.startsWith(".env.")) {
-    throw new Error(`拒绝读取敏感路径：${JSON.stringify(relativePath)}`);
-  }
+  assertNotSensitivePath(requestedSegments, relativePath);
+
   const realCandidate = await realpath(path.resolve(realRoot, relativePath));
   const rootPrefix = realRoot.endsWith(path.sep) ? realRoot : realRoot + path.sep;
   if (!realCandidate.startsWith(rootPrefix)) {
     throw new Error(`非法路径（越界仓库根目录）：${JSON.stringify(relativePath)}`);
   }
+  // 链接可能把普通文件名指向 .git/config 或 .env；必须按真实路径再拒绝一次。
+  assertNotSensitivePath(pathSegments(path.relative(realRoot, realCandidate)), relativePath);
   return realCandidate;
 }
 

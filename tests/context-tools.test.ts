@@ -144,6 +144,38 @@ describe("createContextTools", () => {
       await expect(readFile.invoke({ path: ".env" })).rejects.toThrow(/敏感路径/);
       await expect(readFile.invoke({ path: ".env.local" })).rejects.toThrow(/敏感路径/);
       await expect(readFile.invoke({ path: ".git/config" })).rejects.toThrow(/敏感路径/);
+      // `./` 前缀不得绕过首段检查。
+      await expect(readFile.invoke({ path: "./.git/config" })).rejects.toThrow(/敏感路径/);
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it("worktree 模式按真实路径复查敏感目标", async (ctx) => {
+    const temp = await createTempRepo();
+    try {
+      await writeFile(join(temp.repoPath, ".env"), "ENV_SENTINEL\n", "utf8");
+      const [readFile] = createContextTools(new GitRepo(temp.repoPath), { kind: "worktree" });
+      // 优先让普通文件名指向 .env；Windows 无文件符号链接权限时退回指向 .git 目录的 junction。
+      let readPath: string | null = null;
+      try {
+        await symlink(join(temp.repoPath, ".env"), join(temp.repoPath, "alias.txt"), "file");
+        readPath = "alias.txt";
+      } catch {
+        try {
+          await symlink(join(temp.repoPath, ".git"), join(temp.repoPath, "alias-git"), "junction");
+          readPath = "alias-git/config";
+        } catch {
+          readPath = null;
+        }
+      }
+      if (readPath) {
+        await expect(readFile.invoke({ path: readPath })).rejects.toThrow(/敏感路径/);
+      } else {
+        // 两种链接均不可用：退化为验证 `./` 前缀拒绝。
+        await expect(readFile.invoke({ path: "./.git/config" })).rejects.toThrow(/敏感路径/);
+        ctx.skip();
+      }
     } finally {
       temp.cleanup();
     }
