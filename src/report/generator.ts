@@ -2,9 +2,15 @@ import type { Finding } from "../llm/schemas.js";
 
 const SEVERITIES = ["P0", "P1", "P2", "P3"] as const;
 
-// 转义 HTML 注入相关字符：< > &。故意不转义反引号/方括号——suggestion/evidence 合法含代码反引号，转义会破坏代码格式；XSS 向量只依赖尖括号与 &，平台侧也会 sanitize 原始 HTML。
+// 先剔除控制字符（含 \n \r）：模型自由文本若含换行，可注入 \n##/### 伪造报告章节结构；
+// 剔除后自由文本退化为单行。反引号/方括号仍保留——suggestion/evidence 合法含代码反引号，
+// 转义会破坏代码格式；XSS 向量只依赖尖括号与 &，平台侧也会 sanitize 原始 HTML。
 export function escapeHtml(text: string): string {
-  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  return text
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 }
 
 function countSeverities(findings: Finding[]): Record<(typeof SEVERITIES)[number], number> {

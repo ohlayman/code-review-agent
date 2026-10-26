@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { renderReport } from "../src/report/generator.js";
+import { renderReport, escapeHtml } from "../src/report/generator.js";
 
 const f = (over = {}) => ({ id: "c1", title: "除零", severity: "P2", file: "src/parse.ts", line: 2, category: "correctness", description: "d", trigger: "t", impact: "i", suggestion: "s", confidence: "high", evidence: "e", ...over }) as any;
 
@@ -50,5 +50,14 @@ describe("renderReport", () => {
   it("不转义反引号，保留建议中的代码格式", () => {
     const md = renderReport([f({ suggestion: "改为 `return a ?? 0`" })], "s", []);
     expect(md).toContain("`return a ?? 0`");
+  });
+
+  it("剔除自由文本中的换行/控制字符，不能伪造报告章节", () => {
+    const escaped = escapeHtml("安全\n## 伪造章节\n### [P0] 假结论");
+    expect(escaped).not.toContain("\n##");
+    expect(escaped).not.toContain("\n###");
+    expect(escaped).toContain("安全");
+    // 原有 HTML 转义行为保持不变。
+    expect(escapeHtml("<script>")).toBe("&lt;script&gt;");
   });
 });
