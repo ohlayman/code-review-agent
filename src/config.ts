@@ -3,7 +3,19 @@ import { z } from "zod";
 export const ConfigSchema = z.object({
   apiKey: z.string().min(1),
   model: z.string().min(1).default("deepseek-chat"),
-  baseURL: z.string().url().default("https://api.deepseek.com"),
+  // 仅允许 https 且不含 userinfo：阻止 baseURL 指向 http/内网地址导致 API key 外泄（SSRF 面）。
+  baseURL: z
+    .string()
+    .url()
+    .refine((u) => {
+      try {
+        const parsed = new URL(u);
+        return parsed.protocol === "https:" && !parsed.username && !parsed.password;
+      } catch {
+        return false;
+      }
+    }, "baseURL 必须是 https URL 且不含 userinfo")
+    .default("https://api.deepseek.com"),
   maxToolSteps: z.number().int().positive().default(8),
   maxFilesPerBatch: z.number().int().positive().default(20),
 });

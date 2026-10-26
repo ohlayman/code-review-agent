@@ -23,4 +23,11 @@ describe("loadConfig", () => {
   it("非法 maxToolSteps 被拒绝", () => {
     expect(() => ConfigSchema.parse({ apiKey: "k", maxToolSteps: 0 })).toThrow();
   });
+
+  it("拒绝非 https 或含 userinfo 的 baseURL", () => {
+    expect(() => loadConfig({ DEEPSEEK_API_KEY: "k", REVIEW_BASE_URL: "http://evil.com" })).toThrow(/https/);
+    expect(() => loadConfig({ DEEPSEEK_API_KEY: "k", REVIEW_BASE_URL: "ftp://x" })).toThrow();
+    expect(() => loadConfig({ DEEPSEEK_API_KEY: "k", REVIEW_BASE_URL: "https://user:pass@x" })).toThrow(/userinfo/);
+    expect(() => loadConfig({ DEEPSEEK_API_KEY: "k", REVIEW_BASE_URL: "https://api.other.com" })).not.toThrow();
+  });
 });
