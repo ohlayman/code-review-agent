@@ -7,6 +7,7 @@ import {
 } from "@langchain/core/messages";
 import type { StructuredTool } from "@langchain/core/tools";
 import type { ChatOpenAI } from "@langchain/openai";
+import { OutputParserException } from "@langchain/core/output_parsers";
 import { ZodError, type z } from "zod";
 import type { ChangeSet } from "../repository/diff.js";
 import type { Candidate, VerificationResult } from "../llm/schemas.js";
@@ -23,9 +24,9 @@ const MAX_TOOL_RESULT_CHARS = 8000;
 
 // 仅「结构化输出解析失败」可降级为空结果；其余错误属基础设施故障，必须冒泡。
 function isStructuredParseError(error: unknown): boolean {
-  if (error instanceof ZodError) return true;
-  const name = (error as { name?: string } | null)?.name;
-  return name === "OutputParserException" || name === "ZodError";
+  // OutputParserException 的 name 是 "Error"（靠 lc_error_code 标识），必须用 instanceof 判，
+  // 不能用 name 字符串匹配。ZodError 兜底：部分解析路径会直接抛裸 ZodError。
+  return error instanceof ZodError || error instanceof OutputParserException;
 }
 
 export const DISCOVER_PROMPT = `你是一名资深代码审查员，优先审查 TypeScript/JavaScript 项目。

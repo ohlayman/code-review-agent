@@ -2,8 +2,8 @@ import { describe, it, expect } from "vitest";
 import { discoverCandidates, verifyCandidates } from "../src/review/engine.js";
 import { makeFakeModel } from "./helpers/fake-model.js";
 import { parseDiff } from "../src/repository/diff.js";
+import { OutputParserException } from "@langchain/core/output_parsers";
 import type { Candidate, VerificationResult } from "../src/llm/schemas.js";
-import { CandidateListSchema } from "../src/llm/schemas.js";
 
 const diff = parseDiff(`diff --git a/src/parse.ts b/src/parse.ts
 --- a/src/parse.ts
@@ -32,8 +32,7 @@ describe("engine", () => {
   });
 
   it("模型返回畸形结构化输出时降级为空列表而非抛异常", async () => {
-    const malformed = CandidateListSchema.safeParse({ findings: "not-an-array" });
-    const model = makeFakeModel(malformed.error!, []);
+    const model = makeFakeModel(new OutputParserException("Failed to parse"), []);
     const out = await discoverCandidates({ model: model as any, tools: [], maxToolSteps: 2 }, diff);
     expect(out).toEqual([]);
   });
