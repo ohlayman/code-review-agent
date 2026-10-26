@@ -1,0 +1,146 @@
+import { StateGraph, START, END } from "@langchain/langgraph";
+import type { StructuredTool } from "@langchain/core/tools";
+import type { ChatOpenAI } from "@langchain/openai";
+import { ReviewState, type ReviewStateType } from "./state.js";
+import { parseDiff, type ChangeSet } from "../repository/diff.js";
+import type { RepoAccess, RepositoryAdapter } from "../repository/adapter.js";
+import { discoverCandidates, verifyCandidates, type EngineDeps } from "../review/engine.js";
+import { finalizeFindings, dedupeFindings, sortFindings } from "../review/grade.js";
+import { renderReport } from "../report/generator.js";
+
+export interface AgentDeps {
+  model: ChatOpenAI;
+  toolsFactory: (repo: RepoAccess) => StructuredTool[];
+  repoFactory: (repoPath: string) => RepositoryAdapter;
+  maxToolSteps: number;
+  maxFilesPerBatch: number;
+}
+
+// Phase 1 仅本地 diff 审查；如实声明限制，避免读者误以为已接入平台能力。
+const LIMITATIONS = ["未接入代码托管平台，仅本地 diff 审查"];
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function describeScope(state: ReviewStateType): string {
+  if (state.range === "commit") return state.ref ? `commit ${state.ref}` : "commit（未指定 sha）";
+  if (state.range === "branch") return state.ref ? `branch ${state.ref}` : "branch（未指定分支）";
+  return "工作区 diff";
+}
+
+// 失败兜底：必须明确「无法充分审查」，绝不能渲染成「未发现明确问题」。
+function renderFailureReport(state: ReviewStateType): string {
+  return (
+    [
+      "# Code Review Report",
+      "",
+      "## 1. 审查摘要",
+      "",
+      "- 审查状态：无法充分审查",
+      "- 总体建议：需要补充信息",
+      "- 问题统计：P0 0 个 / P1 0 个 / P2 0 个 / P3 0 个（共 0 个）",
+      `- 审查范围：${describeScope(state)}`,
+      "- 审查范围及验证限制：",
+      `  - ${state.failure ?? "未知错误"}`,
+      ...LIMITATIONS.map((item) => `  - ${item}`),
+      "",
+      "## 2. 问题详情",
+      "",
+      "无法充分审查：审查流程在完成前中断，未能形成有效结论。",
+      "",
+      "## 3. 总结与后续建议",
+      "",
+      "- 最需优先处理的问题：需先修复审查链路故障后重试",
+      "- 建议补充的测试：无（审查未完成）",
+      "- 需要人工确认的事项：审查未完成，本次结果不可作为合并依据",
+    ].join("\n") + "\n"
+  );
+}
+
+async function parseNode(state: ReviewStateType, deps: AgentDeps): Promise<Partial<ReviewStateType>> {
+  try {
+    const repo = deps.repoFactory(state.repoPath);
+    if (state.range === "commit") {
+      if (!state.ref) throw new Error("commit 范围缺少 commit sha");
+      return { changeSet: parseDiff(await repo.getCommitDiff(state.ref), undefined, state.ref) };
+    }
+    if (state.range === "branch") {
+      if (!state.ref) throw new Error("branch 范围缺少分支名");
+      const base = state.base ?? undefined;
+      return { changeSet: parseDiff(await repo.getBranchDiff(state.ref, base), base, state.ref) };
+    }
+    return { changeSet: parseDiff(await repo.getWorkingTreeDiff(), state.base ?? undefined) };
+  } catch (error) {
+    return { failure: `审查失败：${errorMessage(error)}` };
+  }
+}
+
+async function discoverNode(state: ReviewStateType, deps: AgentDeps): Promise<Partial<ReviewStateType>> {
+  if (state.failure) return {};
+  try {
+    const changeSet = state.changeSet;
+    if (!changeSet) throw new Error("缺少变更集");
+    const repo = deps.repoFactory(state.repoPath);
+    const engineDeps: EngineDeps = {
+      model: deps.model,
+      tools: deps.toolsFactory(repo),
+      maxToolSteps: deps.maxToolSteps,
+    };
+
+    if (changeSet.files.length > deps.maxFilesPerBatch) {
+      const candidates = [];
+      for (let i = 0; i < changeSet.files.length; i += deps.maxFilesPerBatch) {
+        const batch: ChangeSet = {
+          ...changeSet,
+          files: changeSet.files.slice(i, i + deps.maxFilesPerBatch),
+        };
+        candidates.push(...(await discoverCandidates(engineDeps, batch)));
+      }
+      return { candidates };
+    }
+    return { candidates: await discoverCandidates(engineDeps, changeSet) };
+  } catch (error) {
+    return { failure: `审查失败：${errorMessage(error)}` };
+  }
+}
+
+async function verifyNode(state: ReviewStateType, deps: AgentDeps): Promise<Partial<ReviewStateType>> {
+  if (state.failure) return {};
+  try {
+    const changeSet = state.changeSet;
+    if (!changeSet) throw new Error("缺少变更集");
+    const repo = deps.repoFactory(state.repoPath);
+    const engineDeps: EngineDeps = {
+      model: deps.model,
+      tools: deps.toolsFactory(repo),
+      maxToolSteps: deps.maxToolSteps,
+    };
+    const verifications = await verifyCandidates(engineDeps, state.candidates, changeSet);
+    // 状态里没有 verifications 字段，故在 verify 阶段即完成候选×复核的合并。
+    return { findings: finalizeFindings(state.candidates, verifications) };
+  } catch (error) {
+    return { failure: `审查失败：${errorMessage(error)}` };
+  }
+}
+
+async function reportNode(state: ReviewStateType): Promise<Partial<ReviewStateType>> {
+  if (state.failure) return { report: renderFailureReport(state) };
+  const findings = sortFindings(dedupeFindings(state.findings ?? []));
+  return { findings, report: renderReport(findings, describeScope(state), LIMITATIONS) };
+}
+
+export function buildReviewGraph(deps: AgentDeps) {
+  return new StateGraph(ReviewState)
+    .addNode("parse", (state) => parseNode(state, deps))
+    .addNode("discover", (state) => discoverNode(state, deps))
+    .addNode("verify", (state) => verifyNode(state, deps))
+    // 节点名不能与状态字段同名（report 已是 channel），故最终节点命名为 render。
+    .addNode("render", (state) => reportNode(state))
+    .addEdge(START, "parse")
+    .addEdge("parse", "discover")
+    .addEdge("discover", "verify")
+    .addEdge("verify", "render")
+    .addEdge("render", END)
+    .compile();
+}

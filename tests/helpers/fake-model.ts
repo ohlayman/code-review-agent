@@ -27,10 +27,12 @@ export function makeFakeModel(
       }
       return new AIMessage({ content: "" });
     },
-    withStructuredOutput: () => ({
+    withStructuredOutput: (schema: any) => ({
       invoke: async () => {
         if (script instanceof Error) throw script;
-        const next = verificationQueue.shift();
+        // 仅复核 schema 才消费复核队列，避免发现阶段误吞脚本结果。
+        const wantsVerifications = Boolean(schema?.shape?.verifications);
+        const next = wantsVerifications ? verificationQueue.shift() : undefined;
         // 每次调用弹出至多一条复核结果，并保持 schema 要求的数组形态。
         return { findings: script?.findings ?? [], verifications: next ? [next] : [] };
       },
