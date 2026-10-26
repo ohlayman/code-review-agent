@@ -110,7 +110,14 @@ async function discoverNode(state: ReviewStateType, deps: AgentDeps): Promise<Pa
     const changeSet = state.changeSet;
     if (!changeSet) throw new Error("缺少变更集");
     // 空变更直接短路：不调用模型，杜绝空 diff 上臆造候选。
-    if (changeSet.files.length === 0) return { candidates: [] };
+    // 但「有变更、却全被二进制/属性抑制」不能当成空变更——那样会误报「未发现明确问题」，必须 fail-closed。
+    if (changeSet.files.length === 0) {
+      const skipped = changeSet.skippedFiles ?? [];
+      if (skipped.length > 0) {
+        return { failure: `无法充分审查：${skipped.length} 个变更文件因二进制或属性抑制无法文本审查` };
+      }
+      return { candidates: [] };
+    }
 
     const repo = deps.repoFactory(state.repoPath);
     const engineDeps: EngineDeps = {
@@ -168,7 +175,13 @@ async function verifyNode(state: ReviewStateType, deps: AgentDeps): Promise<Part
 async function reportNode(state: ReviewStateType): Promise<Partial<ReviewStateType>> {
   if (state.failure) return { report: renderFailureReport(state) };
   const findings = sortFindings(dedupeFindings(state.findings ?? []));
-  return { findings, report: renderReport(findings, describeScope(state), LIMITATIONS) };
+  const limitations = [...LIMITATIONS];
+  // 混合情况（有文本文件 + 有被跳过文件）必须列出被跳过文件，不能静默忽略其审查盲区。
+  const skipped = state.changeSet?.skippedFiles ?? [];
+  if (skipped.length > 0) {
+    limitations.push(`${skipped.length} 个变更文件因二进制或属性抑制未文本审查：${skipped.join("、")}`);
+  }
+  return { findings, report: renderReport(findings, describeScope(state), limitations) };
 }
 
 export function buildReviewGraph(deps: AgentDeps) {

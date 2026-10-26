@@ -24,6 +24,9 @@ export const ChangeSetSchema = z.object({
   base: z.string().nullable(),
   head: z.string().nullable(),
   files: z.array(FileChangeSchema),
+  // 因二进制或被 .gitattributes 抑制而无法文本审查的文件。不能静默丢弃：
+  // 否则全部文件被抑制时 ChangeSet 退化为空，报告会误写「未发现明确问题」。
+  skippedFiles: z.array(z.string()),
 });
 
 export type DiffLine = z.infer<typeof DiffLineSchema>;
@@ -97,6 +100,7 @@ function parseDiffHeader(rest: string): { oldPath: string; newPath: string } | n
 
 export function parseDiff(diffText: string, base?: string, head?: string): ChangeSet {
   const files: FileChange[] = [];
+  const skippedFiles: string[] = [];
   let current: FileChange | null = null;
   let hunk: Hunk | null = null;
   let binary = false;
@@ -104,7 +108,10 @@ export function parseDiff(diffText: string, base?: string, head?: string): Chang
   let newLine = 0;
 
   const flush = (): void => {
-    if (current && !binary) files.push(current);
+    if (current) {
+      if (binary) skippedFiles.push(current.path);
+      else files.push(current);
+    }
     current = null;
     hunk = null;
     binary = false;
@@ -177,5 +184,5 @@ export function parseDiff(diffText: string, base?: string, head?: string): Chang
   }
 
   flush();
-  return { base: base ?? null, head: head ?? null, files };
+  return { base: base ?? null, head: head ?? null, files, skippedFiles };
 }

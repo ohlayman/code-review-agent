@@ -32,9 +32,20 @@ describe("parseDiff", () => {
     expect(parseDiff("").files).toEqual([]);
   });
 
-  it("跳过二进制文件", () => {
+  it("跳过二进制文件但记入 skippedFiles", () => {
     const cs = parseDiff(`diff --git a/x.png b/x.png\nGIT binary patch\nliteral 10\n`);
     expect(cs.files).toHaveLength(0);
+    expect(cs.skippedFiles).toContain("x.png");
+  });
+
+  it("Binary files ... differ（受 .gitattributes -diff 抑制）记入 skippedFiles", () => {
+    const cs = parseDiff(`diff --git a/src/parse.ts b/src/parse.ts\nBinary files a/src/parse.ts and b/src/parse.ts differ\n`);
+    expect(cs.files).toHaveLength(0);
+    expect(cs.skippedFiles).toContain("src/parse.ts");
+  });
+
+  it("空 diff 的 skippedFiles 为空", () => {
+    expect(parseDiff("").skippedFiles).toEqual([]);
   });
 
   it("识别重命名（a/old b/new 且 oldPath≠path）", () => {

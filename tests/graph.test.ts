@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { simpleGit } from "simple-git";
 import { buildReviewGraph, prefixBatchIds } from "../src/core/graph.js";
 import { GitRepositoryAdapter } from "../src/repository/adapter.js";
 import { createContextTools } from "../src/tools/context-tools.js";
@@ -21,6 +24,31 @@ describe("buildReviewGraph", () => {
     // repo 无未提交变更 → changeSet.files 为空
     const out = await graph.invoke({ repoPath: repo.repoPath, range: "diff", ref: null, base: null });
     expect(out.report).toContain("未发现明确问题");
+  });
+
+  it("全部变更被 .gitattributes 二进制抑制时 fail-closed 而非报告未发现问题", async () => {
+    const temp = await createTempRepo();
+    try {
+      const setupGit = simpleGit(temp.repoPath);
+      // 被审提交带 `* -diff`：文本文件也按二进制输出，parseDiff 只剩 skippedFiles。
+      await writeFile(join(temp.repoPath, ".gitattributes"), "* -diff\n", "utf8");
+      await writeFile(
+        join(temp.repoPath, "src", "parse.ts"),
+        "export const BINARY_SUPPRESSED_CHANGE = 1;\n",
+        "utf8",
+      );
+      await setupGit.add(["-A"]);
+      const commit = await setupGit.commit("suppress text diff");
+      const head = commit.commit;
+
+      const model = makeFakeModel(new Error("二进制抑制时不应调用模型"), []);
+      const graph = buildReviewGraph({ model: model as any, toolsFactory: createContextTools, repoFactory: (p) => new GitRepositoryAdapter(p), maxToolSteps: 2, maxFilesPerBatch: 20 });
+      const out = await graph.invoke({ repoPath: temp.repoPath, range: "commit", ref: head, base: null });
+      expect(out.report).toContain("无法充分审查");
+      expect(out.report).not.toContain("未发现明确问题");
+    } finally {
+      temp.cleanup();
+    }
   });
 
   it("发现的问题进入报告并带分级", async () => {
