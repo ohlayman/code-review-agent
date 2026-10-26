@@ -80,18 +80,21 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
   private readonly git: SimpleGit;
   private readonly repoPath: string;
   private worktreeRootPromise?: Promise<string>;
+  private filterDriversPromise?: Promise<string[]>;
 
   constructor(repoPath: string) {
     this.repoPath = path.resolve(repoPath);
     this.git = simpleGit({
       baseDir: this.repoPath,
       allowEnvironment: ["GIT_TERMINAL_PROMPT"],
-      // 允许在 raw 中固定关闭 fsmonitor/pager 并用 -C 锚定文件系统派生的仓库顶层；
-      // 取值均来自本文件或可信 repoPath，不来自被审仓库内容。
+      // 允许在 raw 中固定关闭 fsmonitor/pager、用 -C 锚定文件系统派生的仓库顶层，
+      // 并把被审仓库定义的 filter 驱动覆盖为恒等 cat（allowUnsafeFilter）。
+      // 取值均来自本文件或可信 repoPath，只有驱动名来自仓库配置，且仅用于拼接 `cat`/空值。
       unsafe: {
         allowUnsafeFsMonitor: true,
         allowUnsafePager: true,
         allowUnsafeConfigPaths: true,
+        allowUnsafeFilter: true,
       },
     }).env(buildGitEnv());
   }
@@ -140,6 +143,42 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
     }
   }
 
+  // 敌对 .git/config 可定义 filter.<driver>.clean/smudge/process（由 .gitattributes 声明启用），
+  // diff 比较工作区文件时会执行 clean 过滤器，从而在审查阶段运行任意命令；
+  // --no-ext-diff/--no-textconv 都拦不住。这里枚举已配置的驱动名，供 getWorkingTreeDiff 中和。
+  // git config 无匹配时退出码为 1，simple-git 可能以空消息 reject，故任何错误都退化为空数组。
+  private filterDrivers(): Promise<string[]> {
+    this.filterDriversPromise ??= this.raw(["config", "--get-regexp", "^filter\\."])
+      .then((out) => {
+        const drivers = new Set<string>();
+        for (const line of out.split("\n")) {
+          const key = line.split(/\s/)[0];
+          const match = /^filter\.(.+)\.(clean|smudge|process)$/.exec(key);
+          if (match) drivers.add(match[1]);
+        }
+        return [...drivers];
+      })
+      .catch(() => []);
+    return this.filterDriversPromise;
+  }
+
+  // 命令行级 -c 优先级最高，可覆盖 .git/config：clean/smudge 用恒等的 cat，
+  // process 置空以禁用长驻过滤器。审查本就应看到原始内容，不应跑 LFS 等过滤器。
+  private filterNeutralArgs(drivers: string[]): string[] {
+    const args: string[] = [];
+    for (const name of drivers) {
+      args.push(
+        "-c",
+        `filter.${name}.clean=cat`,
+        "-c",
+        `filter.${name}.smudge=cat`,
+        "-c",
+        `filter.${name}.process=`,
+      );
+    }
+    return args;
+  }
+
   // worktree 语义的 git 命令统一以顶层为工作目录，保证路径与 diff 输出一致；
   // 同时用 --work-tree 钉住可信顶层，避免 core.worktree 把工作区重定向到仓库外。
   private async worktreeRaw(args: string[]): Promise<string> {
@@ -147,10 +186,22 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
     return this.raw(["-C", topLevel, `--work-tree=${topLevel}`, ...args]);
   }
 
+  // rev 模式命令（grep/ls-tree）默认相对 cwd：从子目录启动时只覆盖子目录，且输出路径
+  // 也相对 cwd，会静默漏报顶层文件。用 -C 锚定到文件系统派生的顶层；不加 --work-tree，
+  // 保持 bare 仓库可用。bare 仓库没有 .git 标记会使 worktreeRoot() 抛错，此时退回原行为。
+  private async revRaw(args: string[]): Promise<string> {
+    try {
+      const top = await this.worktreeRoot();
+      return await this.raw(["-C", top, ...args]);
+    } catch {
+      return this.raw(args);
+    }
+  }
+
   private async grepArgs(args: string[], worktree = false): Promise<string> {
     try {
       const grepArgs = ["grep", "-n", ...args];
-      return worktree ? await this.worktreeRaw(grepArgs) : await this.raw(grepArgs);
+      return worktree ? await this.worktreeRaw(grepArgs) : await this.revRaw(grepArgs);
     } catch (error) {
       // git grep 无匹配时退出码为 1，部分 simple-git 版本会以空消息 reject。
       if (error instanceof Error && error.message.trim() === "") return "";
@@ -180,14 +231,19 @@ export class GitRepositoryAdapter implements RepositoryAdapter {
   async listFiles(rev?: string): Promise<string[]> {
     if (rev) assertSafeRef(rev, "rev");
     const out = rev
-      ? await this.raw(["ls-tree", "-r", "--name-only", rev])
+      ? await this.revRaw(["ls-tree", "-r", "--name-only", rev])
       : await this.worktreeRaw(["ls-files"]);
     return out.split("\n").filter((line) => line.length > 0);
   }
 
+  // 必须先中和 filter 驱动：diff 会比较工作区侧文件，触发 .gitattributes 声明的
+  // clean/process 命令（定义在被审仓库的 .git/config 中），--no-ext-diff/--no-textconv
+  // 不阻断这类过滤器，敌对仓库可借此在审查时执行任意命令。
   async getWorkingTreeDiff(): Promise<string> {
     const topLevel = await this.worktreeRoot();
+    const drivers = await this.filterDrivers();
     return this.raw([
+      ...this.filterNeutralArgs(drivers),
       `--work-tree=${topLevel}`,
       "diff",
       "--no-ext-diff",

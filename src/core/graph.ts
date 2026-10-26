@@ -8,7 +8,7 @@ import type { RepoAccess, RepositoryAdapter } from "../repository/adapter.js";
 import type { ReviewTarget } from "../tools/context-tools.js";
 import { discoverCandidates, verifyCandidates, type EngineDeps } from "../review/engine.js";
 import { finalizeFindings, dedupeFindings, sortFindings } from "../review/grade.js";
-import { renderReport } from "../report/generator.js";
+import { renderReport, escapeHtml } from "../report/generator.js";
 
 export interface AgentDeps {
   model: ChatOpenAI;
@@ -51,7 +51,7 @@ function renderFailureReport(state: ReviewStateType): string {
       "- 问题统计：P0 0 个 / P1 0 个 / P2 0 个 / P3 0 个（共 0 个）",
       `- 审查范围：${describeScope(state)}`,
       "- 审查范围及验证限制：",
-      `  - ${state.failure ?? "未知错误"}`,
+      `  - ${escapeHtml(state.failure ?? "未知错误")}`,
       ...LIMITATIONS.map((item) => `  - ${item}`),
       "",
       "## 2. 问题详情",
@@ -137,9 +137,12 @@ async function verifyNode(state: ReviewStateType, deps: AgentDeps): Promise<Part
       maxToolSteps: deps.maxToolSteps,
     };
     const verifications = await verifyCandidates(engineDeps, state.candidates, changeSet);
-    // 有候选却复核不出任何结果属于链路失败，必须 fail-closed，不能渲染成「未发现明确问题」。
-    if (state.candidates.length > 0 && verifications.length === 0) {
-      return { failure: "复核阶段未返回有效结果" };
+    // 每个候选必须有一条同 id 的复核；缺失或 id 失配都算链路失败，必须 fail-closed，
+    // 否则未复核候选会被 finalizeFindings 静默丢弃，渲染成「未发现明确问题」。
+    const verifiedIds = new Set(verifications.map((v) => v.id));
+    const uncovered = state.candidates.some((c) => !verifiedIds.has(c.id));
+    if (state.candidates.length > 0 && uncovered) {
+      return { failure: "复核阶段未覆盖全部候选问题" };
     }
     // 状态里没有 verifications 字段，故在 verify 阶段即完成候选×复核的合并。
     return { findings: finalizeFindings(state.candidates, verifications) };

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { simpleGit } from "simple-git";
@@ -134,6 +134,56 @@ describe("createContextTools", () => {
       expect(String(await readFile.invoke({ path: "root.txt" }))).toContain("TOP_LEVEL_ONLY");
       const list = tools.find((t) => t.name === "list_files")!;
       expect(String(await list.invoke({}))).toContain("src/parse.ts");
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it("从子目录启动时 rev 模式 grep 与 list_files 覆盖顶层", async () => {
+    const temp = await createTempRepo();
+    try {
+      const nested = join(temp.repoPath, "subdir");
+      await mkdir(nested, { recursive: true });
+      await writeFile(join(temp.repoPath, "root-marker.txt"), "TOP_LEVEL_MARKER\n", "utf8");
+      const setupGit = simpleGit(temp.repoPath);
+      await setupGit.add(["-A"]);
+      await setupGit.commit("add root marker");
+
+      const adapter = new GitRepo(nested);
+      // rev 模式必须锚定到文件系统派生的顶层，不能只覆盖子目录。
+      expect(await adapter.grep("TOP_LEVEL_MARKER", "HEAD")).toContain("root-marker.txt");
+      const files = await adapter.listFiles("HEAD");
+      expect(files).toContain("root-marker.txt");
+      expect(files).toContain("src/parse.ts");
+    } finally {
+      temp.cleanup();
+    }
+  });
+
+  it("工作区 diff 不得执行被审仓库定义的 filter 驱动", async () => {
+    const temp = await createTempRepo();
+    try {
+      const setupGit = simpleGit(temp.repoPath);
+      await writeFile(join(temp.repoPath, "data.txt"), "ORIGINAL\n", "utf8");
+      await setupGit.add(["-A"]);
+      await setupGit.commit("add data");
+      await writeFile(join(temp.repoPath, "data.txt"), "CHANGED_BY_REVIEW\n", "utf8");
+
+      // filter 命令由被审仓库的 .gitattributes + .git/config 共同定义；
+      // 一旦 diff 比较工作区侧时执行 clean 过滤器，就会在仓库内落下哨兵文件。
+      const sentinel = join(temp.repoPath, "filter-pwned.sentinel");
+      const sentinelPosix = sentinel.replaceAll("\\", "/");
+      await writeFile(join(temp.repoPath, ".gitattributes"), "*.txt filter=evil\n", "utf8");
+      await writeFile(
+        join(temp.repoPath, ".git", "config"),
+        // 用 `写文件 && cat` 而非嵌套 `sh -c '…; cat'`：git 配置值中的 `;` 会被截断。
+        `[filter "evil"]\n\tclean = printf PWNED > ${sentinelPosix} && cat\n`,
+        { flag: "a" },
+      );
+
+      const diff = await new GitRepo(temp.repoPath).getWorkingTreeDiff();
+      expect(existsSync(sentinel)).toBe(false);
+      expect(diff).toContain("CHANGED_BY_REVIEW");
     } finally {
       temp.cleanup();
     }

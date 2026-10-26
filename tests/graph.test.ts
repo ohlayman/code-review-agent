@@ -47,6 +47,18 @@ describe("buildReviewGraph", () => {
     expect(new Set(merged.map((item) => item.id)).size).toBe(merged.length);
   });
 
+  it("仅部分候选被复核覆盖时报「无法充分审查」", async () => {
+    // 2 个候选只有 c1 得到复核；c2 缺失复核说明链路不完整，必须 fail-closed 而非输出部分结论。
+    const model = makeFakeModel(
+      { findings: [candidate, { ...candidate, id: "c2" }] },
+      [verification],
+    );
+    const graph = buildReviewGraph({ model: model as any, toolsFactory: createContextTools, repoFactory: (p) => new GitRepositoryAdapter(p), maxToolSteps: 2, maxFilesPerBatch: 20 });
+    const out = await graph.invoke({ repoPath: repo.repoPath, range: "commit", ref: repo.headCommit, base: null });
+    expect(out.report).toContain("无法充分审查");
+    expect(out.report).not.toContain("未发现明确问题");
+  });
+
   it("发现候选但复核返回空结果时报「无法充分审查」", async () => {
     const model = makeFakeModel({ findings: [candidate] }, []);
     const graph = buildReviewGraph({ model: model as any, toolsFactory: createContextTools, repoFactory: (p) => new GitRepositoryAdapter(p), maxToolSteps: 2, maxFilesPerBatch: 20 });

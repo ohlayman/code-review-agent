@@ -3,7 +3,7 @@ import type { Finding } from "../llm/schemas.js";
 const SEVERITIES = ["P0", "P1", "P2", "P3"] as const;
 
 // 转义 HTML 注入相关字符：< > &。故意不转义反引号/方括号——suggestion/evidence 合法含代码反引号，转义会破坏代码格式；XSS 向量只依赖尖括号与 &，平台侧也会 sanitize 原始 HTML。
-function escapeHtml(text: string): string {
+export function escapeHtml(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
