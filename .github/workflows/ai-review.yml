@@ -1,0 +1,33 @@
+# AI Code Review：提 PR（opened/synchronize/reopened）时自动审查并把报告回写为 PR 评论。
+# 用法：把本文件复制到目标仓库的 .github/workflows/ 下，并配置 DEEPSEEK_API_KEY secret。
+# <agent-repo> 替换为 code-review-agent 仓库地址（如 <owner>/code-review-agent）；
+# 若 agent 已发布到 npm，可改为 `npx code-review-agent pr ...`。
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8
+      - name: 拉取 agent 并运行 AI 审查
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          git clone --depth 1 https://github.com/<agent-repo> /tmp/code-review-agent
+          cd /tmp/code-review-agent
+          pnpm install --frozen-lockfile
+          pnpm dev pr ${{ github.repository }} ${{ github.event.pull_request.number }} --comment ${{ github.repository }}#${{ github.event.pull_request.number }}

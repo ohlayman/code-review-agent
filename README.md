@@ -54,13 +54,14 @@ DEEPSEEK_API_KEY=sk-xxxxxxxx
 | `REVIEW_BASE_URL` | `https://api.deepseek.com` | OpenAI 兼容端点；必须是 https 且不能内嵌用户名/密码 |
 | `MAX_TOOL_STEPS` | `8` | 单个阶段（发现/每条复核）允许的工具调用轮数上限 |
 | `MAX_FILES_PER_BATCH` | `20` | 单次送入模型的文件数上限，超出则按文件分批发现候选 |
+| `GITHUB_TOKEN` | 无（可选） | GitHub API Token；公共仓库可匿名（约 60 次/小时限流），私有仓库或 `--comment` 回写必填；只读权限即可 |
 
 **关于 `.env` 的读取位置（安全设计）**：`.env` 只从 **Agent 自身目录**（由 `src/index.ts` 所在位置经 `import.meta.url` 推导出的项目根目录）加载，**不会**从 `process.cwd()` 或 `--repo` 指向的被审仓库读取。这样即使被审仓库里投放了恶意 `.env`，也无法劫持 `DEEPSEEK_API_KEY` 或把请求改写到攻击者端点。因此请在 Agent 项目根目录放置 `.env`，而不是在被审仓库里。
 
 ## 使用
 
 ```text
-用法：code-review-agent <diff|commit|branch> [ref] [--base <ref>] [--repo <path>]
+用法：code-review-agent <diff|commit|branch|pr> [ref] [--base <ref>] [--repo <path>] [--comment <owner/repo#pr>]
 ```
 
 | 命令 | 审查范围 | 说明 |
@@ -68,6 +69,7 @@ DEEPSEEK_API_KEY=sk-xxxxxxxx
 | `diff` | 工作区未提交变更（`git diff HEAD`） | `--base` 仅作为元数据记录，不改变实际 diff 范围 |
 | `commit <sha>` | 单个提交相对其父提交（`git show <sha>`） | 必须提供 commit sha；`--base` 对该命令无效 |
 | `branch <name>` | `merge-base(base, name)..name` | `--base` 指定基准分支，默认 `main` |
+| `pr <owner/repo> <pr>` | base...head 三圆点 diff | 解析 GitHub PR → 克隆 base 仓库 → 以 `branch` 范围审查；`--comment` 可回写 PR 评论 |
 
 `--repo <path>` 指定被审仓库路径，默认 `process.cwd()`。
 
@@ -156,9 +158,12 @@ pnpm dev branch feature/login --base main --repo ../my-app
 
 ### 接入 GitHub / GitLab / Gitea
 
-- 在 `src/platform/types.ts` 的 `PlatformAdapter` 上实现 `postReviewComment(reviewId, body)`，各平台各自一个适配器。
-- 平台侧数据（PR/MR 的变更）在适配器内转换为核心统一的 `ChangeSet`（定义见 `src/repository/diff.ts`），再交给 Agent Core；核心审查逻辑不应感知任何平台专有字段。
-- 当前 `Phase 1` 只读、不发布评论，接口仅用于占位与解耦。
+GitHub 已实现，GitLab / Gitea 待扩展：
+
+- **读侧**：`src/platform/github.ts` 的 `resolvePullRequest` 解析 PR（拿 base/head sha 与 base 仓库 clone URL），`clonePullRequest` 克隆 base 仓库并按 sha 拉取 base/head，不执行被审仓库代码。
+- **写侧**：`GitHubPlatformAdapter` 实现 `PlatformAdapter.postReviewComment(reviewId, body)`，把 Markdown 报告回写为 PR 评论。
+- **触发侧**：`.github/workflows/ai-review.yml` 是 GitHub Action 模板，提 PR 时自动运行 `pr` 命令并回写评论。
+- 其他平台按同一接口各自实现一个适配器：平台侧数据在适配器内转换为核心统一的 `ChangeSet`（`src/repository/diff.ts`），核心审查逻辑不感知平台专有字段。
 
 ### 替换模型
 
@@ -167,8 +172,10 @@ pnpm dev branch feature/login --base main --repo ../my-app
 
 ## 当前限制
 
-- **只读**：不向任何代码托管平台写评论，不自动合并、不自动修改源码（无 auto-merge / auto-fix）。
-- **仅本地 diff 审查**：未接入 GitHub/GitLab/Gitea 的 PR/MR 数据，报告中的「验证限制」会固定声明这一点。
+- **无 Webhook 服务**：触发靠 GitHub Action（`.github/workflows/ai-review.yml`），未提供常驻 Webhook 接收器。
+- **无 auto-merge / auto-fix**：写侧仅回写审查评论，不自动合并、不自动修改源码。
+- **fork PR 的 head 拉取**：按 SHA 拉取 fork 的 head，依赖 GitHub 端开启的 `uploadpack.allowReachableSHA1InWant`（经 `refs/pull/N/head` 可达）。
+- **匿名访问限流**：公共仓库可匿名调用 GitHub API（约 60 次/小时），超出或私有仓库需配置 `GITHUB_TOKEN`。
 - **测试不触发真实模型**：`pnpm test` 使用确定性的 fake 模型，覆盖流程、解析、复核合并与报告渲染，但不验证真实 LLM 的审查质量与网络行为。
 - **语言范围**：提示词优先针对 TypeScript/JavaScript；其他语言可运行但效果未经验证。
 - **diff 解析边界**：二进制文件会被跳过；路径含字面 ` b/` 子串等极端情况受 unified diff 格式固有歧义影响。
