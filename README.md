@@ -154,6 +154,42 @@ pnpm dev branch feature/login --base main --repo ../my-app
 
 变更文件数超过 `MAX_FILES_PER_BATCH` 时会按批发现候选，并为每批候选 id 加 `b<批次>-` 前缀，避免跨批 id 冲突导致复核错配。
 
+## 接入真实 GitHub 仓库（提 PR 自动审查）
+
+仓库已内置 GitHub Action 模板 `.github/workflows/ai-review.yml`：目标仓库有人提 PR（`opened` / `synchronize` / `reopened`）时，Action 自动拉取本 Agent、运行 `pr` 命令审查该 PR，并把 Markdown 报告回写为该 PR 的评论。
+
+```mermaid
+flowchart LR
+    A[开发者提 PR] --> B[GitHub Action 触发]
+    B --> C[拉取 agent 并运行 pr 命令]
+    C --> D[解析 PR + 克隆 base 仓库]
+    D --> E[DeepSeek 两阶段审查]
+    E --> F[回写报告为 PR 评论]
+```
+
+### 接入步骤（目标仓库侧）
+
+1. **复制 workflow**：把本仓库的 `.github/workflows/ai-review.yml` 复制到目标仓库的 `.github/workflows/` 目录。
+2. **改占位符**：把文件里的 `<agent-repo>` 替换为本 Agent 的 GitHub 地址（如 `your-name/code-review-agent`）。若 Agent 已发布到 npm，可改为 `npx code-review-agent pr ...`。
+3. **配置密钥**：在目标仓库 Settings → Secrets and variables → Actions 新增 secret `DEEPSEEK_API_KEY`（DeepSeek API Key）。`GITHUB_TOKEN` 无需配置——workflow 用 GitHub 内置的 `${{ github.token }}`。
+
+完成上述三步后，目标仓库的每个 PR 都会自动触发审查并回写评论。
+
+### 本地手动验证（不依赖 Action）
+
+```bash
+# 输入：审查 owner/repo 的第 7 号 PR，并把报告回写为该 PR 评论
+pnpm dev pr owner/repo 7 --comment owner/repo#7
+```
+
+`--comment` 需要 `GITHUB_TOKEN` 有该仓库的评论写入权限；不加 `--comment` 则只打印报告、不回写。
+
+### 注意事项
+
+- **fork PR 回写受限**：workflow 用 `pull_request` 事件，此时 GitHub 内置 `github.token` 对 fork PR 只有只读权限，无法回写评论（同仓库 PR 正常）。要支持 fork PR 回写，需改用 `pull_request_target` 事件或另配一个有写权限的 PAT，并额外评估安全风险。
+- **fork PR 的 head 拉取**：按 SHA 拉取 fork 的 head，依赖 GitHub 端 `uploadpack.allowReachableSHA1InWant`（经 `refs/pull/N/head` 可达）。
+- **私有仓库**：`resolvePullRequest` 与 `clonePullRequest` 需 `GITHUB_TOKEN` 鉴权；workflow 已注入 `${{ github.token }}`，手动运行时需自行 `export GITHUB_TOKEN=...`。
+
 ## 扩展点
 
 ### 接入 GitHub / GitLab / Gitea
