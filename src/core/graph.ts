@@ -18,8 +18,9 @@ export interface AgentDeps {
   maxFilesPerBatch: number;
 }
 
-// Phase 1 仅本地 diff 审查；如实声明限制，避免读者误以为已接入平台能力。
-const LIMITATIONS = ["未接入代码托管平台，仅本地 diff 审查"];
+// 如实声明审查边界：核心引擎基于本地 git 仓库（diff + 按需读源码）审查，
+// PR/MR 经平台层（如 GitHub Action）克隆到本地后进入本引擎，引擎不直接调用平台 API。
+const LIMITATIONS = ["审查基于本地 git 仓库（PR/MR 由平台层克隆到本地后审查）"];
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

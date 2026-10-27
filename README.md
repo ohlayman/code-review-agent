@@ -115,7 +115,7 @@ pnpm dev branch feature/login --base main --repo ../my-app
 - 问题统计：P0 0 个 / P1 0 个 / P2 1 个 / P3 0 个（共 1 个）
 - 审查范围：工作区 diff
 - 验证限制：
-  - 未接入代码托管平台，仅本地 diff 审查
+  - 审查基于本地 git 仓库（PR/MR 由平台层克隆到本地后审查）
 
 ## 2. 问题详情
 
