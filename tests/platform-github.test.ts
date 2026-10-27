@@ -6,6 +6,7 @@ import { simpleGit } from "simple-git";
 import {
   resolvePullRequest,
   clonePullRequest,
+  gitEnv,
   GitHubPlatformAdapter,
 } from "../src/platform/github.js";
 import { GitRepositoryAdapter } from "../src/repository/adapter.js";
@@ -116,21 +117,43 @@ describe("GitHubPlatformAdapter.postReviewComment", () => {
   });
 });
 
+describe("gitEnv", () => {
+  it("token 只经 GIT_CONFIG_* 环境变量注入，不进入 argv", () => {
+    const env = gitEnv("sekret");
+    expect(env.GIT_CONFIG_COUNT).toBe("1");
+    expect(env.GIT_CONFIG_KEY_0).toBe("http.extraHeader");
+    expect(env.GIT_CONFIG_VALUE_0).toBe("Authorization: Bearer sekret");
+    // 白名单不包含密钥类变量，避免 DEEPSEEK_API_KEY/GITHUB_TOKEN 泄露给子进程。
+    expect(env.DEEPSEEK_API_KEY).toBeUndefined();
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+  });
+
+  it("无 token 时不注入 GIT_CONFIG_*", () => {
+    const env = gitEnv();
+    expect(env.GIT_CONFIG_COUNT).toBeUndefined();
+    expect(env.GIT_CONFIG_KEY_0).toBeUndefined();
+    expect(env.GIT_CONFIG_VALUE_0).toBeUndefined();
+  });
+});
+
+async function prepareTwoCommitRepo() {
+  const repo = await createTempRepo();
+  await writeFile(
+    join(repo.repoPath, "src", "parse.ts"),
+    "export function divide(a, b) { if (b === 0) throw new Error('除数为 0'); return a / b; }\n",
+    "utf8",
+  );
+  const git = simpleGit(repo.repoPath);
+  await git.add(["-A"]);
+  await git.commit("head");
+  const head = (await git.revparse(["HEAD"])).trim();
+  return { repo, base: repo.headCommit, head };
+}
+
 describe("clonePullRequest", () => {
   it("克隆本地仓库并按 sha 拉取 base/head，可用 GitRepositoryAdapter 读取 diff", async () => {
-    const repo = await createTempRepo();
+    const { repo, base, head } = await prepareTwoCommitRepo();
     try {
-      await writeFile(
-        join(repo.repoPath, "src", "parse.ts"),
-        "export function divide(a, b) { if (b === 0) throw new Error('除数为 0'); return a / b; }\n",
-        "utf8",
-      );
-      const git = simpleGit(repo.repoPath);
-      await git.add(["-A"]);
-      await git.commit("head");
-      const head = (await git.revparse(["HEAD"])).trim();
-      const base = repo.headCommit;
-
       const r = await clonePullRequest(repo.repoPath, base, head);
       try {
         expect(existsSync(r.dir)).toBe(true);
@@ -141,6 +164,21 @@ describe("clonePullRequest", () => {
       } finally {
         await r.cleanup();
         expect(existsSync(r.dir)).toBe(false);
+      }
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it("带 token 时经 GIT_CONFIG_* 环境变量注入仍可克隆", async () => {
+    const { repo, base, head } = await prepareTwoCommitRepo();
+    try {
+      const r = await clonePullRequest(repo.repoPath, base, head, "dummy-token");
+      try {
+        const diff = await new GitRepositoryAdapter(r.dir).getBranchDiff(r.head, r.base);
+        expect(diff).toContain("除数为 0");
+      } finally {
+        await r.cleanup();
       }
     } finally {
       repo.cleanup();

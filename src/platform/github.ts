@@ -21,7 +21,9 @@ const REVIEW_ID_PATTERN = /^([^/]+)\/([^#]+)#(\d+)$/;
 
 // git 子进程只需最小环境：透传 process.env 会把 GIT_EDITOR/GIT_SSH 等传给子进程，
 // 触发 simple-git 的 unsafe 拦截，也会把 DEEPSEEK_API_KEY 等密钥泄露给克隆到的敌意仓库。
-function gitEnv(): NodeJS.ProcessEnv {
+// token 经 GIT_CONFIG_* 环境变量注入 http.extraHeader：git 从环境读取这些变量（而非 argv），
+// 密钥不进入子进程命令行，不会出现在 ps/进程列表，也不写入 clone URL 或 .git/config。
+export function gitEnv(token?: string): NodeJS.ProcessEnv {
   const whitelist = [
     "PATH", "PATHEXT", "SystemRoot", "COMSPEC",
     "TEMP", "TMP", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
@@ -33,6 +35,11 @@ function gitEnv(): NodeJS.ProcessEnv {
     if (value !== undefined) env[key] = value;
   }
   env.GIT_TERMINAL_PROMPT = "0";
+  if (token) {
+    env.GIT_CONFIG_COUNT = "1";
+    env.GIT_CONFIG_KEY_0 = "http.extraHeader";
+    env.GIT_CONFIG_VALUE_0 = `Authorization: Bearer ${token}`;
+  }
   return env;
 }
 
@@ -78,13 +85,19 @@ export async function clonePullRequest(
   token?: string,
 ): Promise<{ dir: string; base: string; head: string; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(join(tmpdir(), "code-review-pr-"));
-  const git = simpleGit({ baseDir: dir, allowEnvironment: ["GIT_TERMINAL_PROMPT"] }).env(gitEnv());
-  // token 只经 -c http.extraHeader 传入子进程，不写进 clone URL 或 .git/config，避免凭据残留。
-  const auth = token ? ["-c", `http.extraHeader=Authorization: Bearer ${token}`] : [];
+  // allowEnvironment 放行 GIT_TERMINAL_PROMPT 与 GIT_CONFIG_*：token 只经环境变量注入，
+  // 不进入子进程 argv，也不写进 clone URL 或 .git/config，避免凭据出现在 ps/进程列表。
+  const git = simpleGit({
+    baseDir: dir,
+    allowEnvironment: ["GIT_TERMINAL_PROMPT", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"],
+    // GIT_CONFIG_* 是 git 官方从环境读取配置的通道（不进入 argv）；放行该计数变量，
+    // 仅用于注入 http.extraHeader（http.extraHeader 不在 simple-git 的配置黑名单内）。
+    unsafe: { allowUnsafeConfigEnvCount: true },
+  }).env(gitEnv(token));
   try {
-    await git.raw([...auth, "clone", "--no-checkout", cloneUrl, "."]);
-    await git.raw([...auth, "fetch", "origin", headSha]);
-    await git.raw([...auth, "fetch", "origin", baseSha]);
+    await git.raw(["clone", "--no-checkout", cloneUrl, "."]);
+    await git.raw(["fetch", "origin", headSha]);
+    await git.raw(["fetch", "origin", baseSha]);
   } catch (error) {
     await rm(dir, { recursive: true, force: true });
     throw error;
