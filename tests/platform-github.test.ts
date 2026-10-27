@@ -122,7 +122,7 @@ describe("gitEnv", () => {
     const env = gitEnv("sekret");
     expect(env.GIT_CONFIG_COUNT).toBe("1");
     expect(env.GIT_CONFIG_KEY_0).toBe("http.extraHeader");
-    expect(env.GIT_CONFIG_VALUE_0).toBe("Authorization: Bearer sekret");
+    expect(env.GIT_CONFIG_VALUE_0).toBe("Authorization: Basic eC1hY2Nlc3MtdG9rZW46c2VrcmV0");
     // 白名单不包含密钥类变量，避免 DEEPSEEK_API_KEY/GITHUB_TOKEN 泄露给子进程。
     expect(env.DEEPSEEK_API_KEY).toBeUndefined();
     expect(env.GITHUB_TOKEN).toBeUndefined();

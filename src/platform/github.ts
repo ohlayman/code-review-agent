@@ -36,9 +36,14 @@ export function gitEnv(token?: string): NodeJS.ProcessEnv {
   }
   env.GIT_TERMINAL_PROMPT = "0";
   if (token) {
+    // GitHub 的 git 智能 HTTP 传输只认 Basic 认证（Bearer 仅对 REST API 有效），
+    // 否则 clone 私有仓库时 git 会回退到交互式询问用户名，触发 terminal prompts disabled 失败。
+    // x-access-token 是 GitHub Actions 内置 token 的约定用户名；token 仍只经
+    // GIT_CONFIG_* 环境变量注入，不进入 argv，也不会写进 clone URL 或 .git/config。
+    const basicAuth = Buffer.from(`x-access-token:${token}`).toString("base64");
     env.GIT_CONFIG_COUNT = "1";
     env.GIT_CONFIG_KEY_0 = "http.extraHeader";
-    env.GIT_CONFIG_VALUE_0 = `Authorization: Bearer ${token}`;
+    env.GIT_CONFIG_VALUE_0 = `Authorization: Basic ${basicAuth}`;
   }
   return env;
 }
