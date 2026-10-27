@@ -115,7 +115,11 @@ async function runWithTools<T>(
   // 不吞任何错误：基础设施失败与结构化输出解析失败都必须冒泡（fail-closed），
   // 由 Agent Core（Task 7）捕获后报「无法充分审查」，避免把失败渲染成「未发现问题」。
   const out = (await model
-    .withStructuredOutput(outSchema as z.ZodType<Record<string, unknown>>)
+    .withStructuredOutput(outSchema as z.ZodType<Record<string, unknown>>, {
+      // DeepSeek 不支持 response_format=json_schema（LangChain 对非 gpt 模型默认走 jsonSchema），
+      // 必须显式用 functionCalling（tools + tool_choice 强制），否则返回 400。
+      method: "functionCalling",
+    })
     .invoke([...current, new HumanMessage("请输出结构化结果")])) as Record<string, T[] | undefined>;
   return out[outKey] ?? [];
 }
